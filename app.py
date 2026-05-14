@@ -68,6 +68,10 @@ HTML = """<!DOCTYPE html>
   tr.expandable-row:hover td { background: #EFF6FF !important; }
   tr.child-row td { background: #F0F9FF; }
   tr.child-row:hover td { background: #DBEAFE !important; }
+  tr[data-cg-customer] { cursor: pointer; }
+  tr[data-cg-customer]:hover td { background: #BAE6FD !important; }
+  tr.grandchild-row td { background: #E0F2FE; }
+  tr.grandchild-row:hover td { background: #BAE6FD !important; }
 </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -197,9 +201,10 @@ HTML = """<!DOCTYPE html>
 // ── State ─────────────────────────────────────────────────────────────────────
 let allRows = [];
 let currentTab = 'item-group';
-let expandedGroups    = new Set();   // Item Group → Parent Item
-let expandedCGRows    = new Set();   // Customer Group → Customer
-let expandedCustomers = new Set();   // Amazon / Flipkart → sub-channels
+let expandedGroups      = new Set();  // Item Group → Parent Item
+let expandedCGRows      = new Set();  // Customer Group → Customer
+let expandedCGCustomers = new Set();  // Customer Group > Amazon/Flipkart → Client Type
+let expandedCustomers   = new Set();  // Customer tab: Amazon / Flipkart → sub-channels
 
 const TABS = {
   'item-group':      { key: 'NEW MIS ITEM GROUP', label: 'Item Group' },
@@ -497,9 +502,33 @@ function renderTable(tab, rows) {
         const exp = expandedCGRows.has(r.label);
         html += expandableRow('data-cg', r.label, r, exp);
         if (exp) {
-          aggregate(rows.filter(x => x['Customer Group'] === r.label), 'Customer')
+          const cgRows = rows.filter(x => x['Customer Group'] === r.label);
+          aggregate(cgRows, 'Customer')
             .filter(s => !s.isTotal)
-            .forEach(s => { html += childRow(s.label, s); });
+            .forEach(s => {
+              const needsClientType = s.label.startsWith('Amazon Retail India') ||
+                                      s.label.startsWith('Flipkart India Private Limited');
+              if (needsClientType) {
+                const ck = r.label + '||' + s.label;
+                const cExp = expandedCGCustomers.has(ck);
+                // Render as expandable child row
+                html += `<tr class="child-row expandable-row border-t border-blue-100" data-cg-customer="${esc(ck)}">
+                  <td class="px-4 py-2 text-xs text-blue-800 pl-10 font-medium">
+                    <span class="inline-block w-5 text-blue-500 text-[10px] select-none">${cExp ? '&#9660;' : '&#9654;'}</span>&#8627; ${s.label}
+                  </td>${metricCells(s, 'sm')}</tr>`;
+                if (cExp) {
+                  aggregate(cgRows.filter(x => x['Customer'] === s.label), 'Client Type')
+                    .filter(ct => !ct.isTotal)
+                    .forEach(ct => {
+                      html += `<tr class="grandchild-row border-t border-sky-100">
+                        <td class="px-4 py-2 text-xs text-sky-900 pl-20 font-medium">&#8627; ${ct.label || '(No Client Type)'}</td>
+                        ${metricCells(ct, 'sm')}</tr>`;
+                    });
+                }
+              } else {
+                html += childRow(s.label, s);
+              }
+            });
         }
       } else {
         html += regularRow(r);
@@ -512,6 +541,16 @@ function renderTable(tab, rows) {
 
 // ── Unified click handler for all expandable tabs ────────────────────────────
 document.getElementById('table-body').addEventListener('click', e => {
+  // Second-level toggle inside Customer Group: Amazon / Flipkart → Client Type
+  if (currentTab === 'customer-group') {
+    const trCC = e.target.closest('tr[data-cg-customer]');
+    if (trCC) {
+      const ck = trCC.dataset.cgCustomer;   // data-cg-customer → dataset.cgCustomer
+      expandedCGCustomers.has(ck) ? expandedCGCustomers.delete(ck) : expandedCGCustomers.add(ck);
+      renderTable(currentTab, filteredRows());
+      return;
+    }
+  }
   const handlers = {
     'item-group':     ['tr[data-group]',    'group',    expandedGroups],
     'customer-group': ['tr[data-cg]',       'cg',       expandedCGRows],
@@ -615,7 +654,7 @@ def upload():
         )
 
     keep = ["NEW MIS ITEM GROUP", "Parent Item", "Sales Order Date", "Customer Group",
-            "Customer", "Origin"] + num_cols
+            "Customer", "Client Type", "Origin"] + num_cols
     keep = [c for c in keep if c in df.columns]
 
     # Use pandas JSON serialiser so NaN → null (valid JSON); then parse back to list
