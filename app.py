@@ -54,8 +54,12 @@ HTML = """<!DOCTYPE html>
   .drop-zone { border: 2px dashed #cbd5e1; transition: all .2s; }
   .drop-zone.drag-over { border-color: #2563eb; background: #eff6ff; }
   tr.grand-total td { background: #e2e8f0 !important; font-weight: 700; }
-  tbody tr:not(.grand-total):hover td { background: #f8fafc; }
+  tbody tr:not(.grand-total):not(.child-row):hover td { background: #f8fafc; }
   thead th { position: sticky; top: 0; z-index: 1; }
+  tr.expandable-row { cursor: pointer; }
+  tr.expandable-row:hover td { background: #EFF6FF !important; }
+  tr.child-row td { background: #F0F9FF; }
+  tr.child-row:hover td { background: #DBEAFE !important; }
 </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -185,6 +189,7 @@ HTML = """<!DOCTYPE html>
 // ── State ─────────────────────────────────────────────────────────────────────
 let allRows = [];
 let currentTab = 'item-group';
+let expandedGroups = new Set();
 
 const TABS = {
   'item-group':      { key: 'NEW MIS ITEM GROUP', label: 'Item Group' },
@@ -358,20 +363,58 @@ function aggregate(rows, key) {
 }
 
 // ── Table rendering ───────────────────────────────────────────────────────────
+function metricCells(r, size) {
+  const p = size === 'sm' ? 'px-4 py-2 text-xs' : 'px-4 py-2.5 text-sm';
+  return `
+    <td class="${p} text-right text-gray-700">${fmtN(r.stock)}</td>
+    <td class="${p} text-right text-gray-700">${fmtN(r.delivered)}</td>
+    <td class="${p} text-right text-gray-700">${r.closed  > 0 ? fmtN(r.closed)  : '-'}</td>
+    <td class="${p} text-right text-gray-700">${r.pending > 0 ? fmtN(r.pending) : '-'}</td>
+    <td class="${p} text-center font-bold" style="background:${fillClr(r.fillRate)}">${pct(r.fillRate)}</td>
+    <td class="${p} text-center font-bold" style="background:${closedClr(r.closedPct)}">${pct(r.closedPct)}</td>
+    <td class="${p} text-center font-bold" style="background:${penClr(r.penDis)}">${pct(r.penDis)}</td>`;
+}
+
 function renderTable(tab, rows) {
   const data = aggregate(rows, TABS[tab].key);
-  document.getElementById('table-body').innerHTML = data.map(r => `
-    <tr class="${r.isTotal ? 'grand-total' : ''} border-t border-gray-100">
-      <td class="px-4 py-2.5 text-gray-800">${r.label}</td>
-      <td class="px-4 py-2.5 text-right text-gray-700">${fmtN(r.stock)}</td>
-      <td class="px-4 py-2.5 text-right text-gray-700">${fmtN(r.delivered)}</td>
-      <td class="px-4 py-2.5 text-right text-gray-700">${r.closed > 0 ? fmtN(r.closed) : '-'}</td>
-      <td class="px-4 py-2.5 text-right text-gray-700">${r.pending > 0 ? fmtN(r.pending) : '-'}</td>
-      <td class="px-4 py-2.5 text-center font-bold" style="background:${fillClr(r.fillRate)}">${pct(r.fillRate)}</td>
-      <td class="px-4 py-2.5 text-center font-bold" style="background:${closedClr(r.closedPct)}">${pct(r.closedPct)}</td>
-      <td class="px-4 py-2.5 text-center font-bold" style="background:${penClr(r.penDis)}">${pct(r.penDis)}</td>
-    </tr>`).join('');
+  let html = '';
+
+  for (const r of data) {
+    if (tab === 'item-group' && !r.isTotal) {
+      const exp = expandedGroups.has(r.label);
+      html += `<tr class="expandable-row border-t border-gray-100" data-group="${esc(r.label)}">
+        <td class="px-4 py-2.5 text-sm text-gray-800 font-medium">
+          <span class="inline-block w-5 text-blue-500 text-[10px] select-none">${exp ? '&#9660;' : '&#9654;'}</span>${r.label}
+        </td>${metricCells(r, 'md')}</tr>`;
+
+      if (exp) {
+        const subRows = rows.filter(row => row['NEW MIS ITEM GROUP'] === r.label);
+        const subData = aggregate(subRows, 'Parent Item').filter(s => !s.isTotal);
+        for (const s of subData) {
+          html += `<tr class="child-row border-t border-blue-100">
+            <td class="px-4 py-2 text-xs text-blue-800 pl-10 font-medium">&#8627; ${s.label}</td>
+            ${metricCells(s, 'sm')}</tr>`;
+        }
+      }
+    } else {
+      html += `<tr class="${r.isTotal ? 'grand-total' : ''} border-t border-gray-100">
+        <td class="px-4 py-2.5 text-sm text-gray-800">${r.label}</td>
+        ${metricCells(r, 'md')}</tr>`;
+    }
+  }
+
+  document.getElementById('table-body').innerHTML = html;
 }
+
+// ── Item Group row click → toggle Parent Item drill-down ──────────────────────
+document.getElementById('table-body').addEventListener('click', e => {
+  if (currentTab !== 'item-group') return;
+  const tr = e.target.closest('tr[data-group]');
+  if (!tr) return;
+  const label = tr.dataset.group;
+  expandedGroups.has(label) ? expandedGroups.delete(label) : expandedGroups.add(label);
+  renderTable(currentTab, filteredRows());
+});
 
 // ── Download ──────────────────────────────────────────────────────────────────
 async function downloadExcel() {
@@ -407,6 +450,7 @@ async function downloadExcel() {
 const sumCol = (rows, col) => rows.reduce((s, r) => s + (r[col] || 0), 0);
 const fmtN   = n => n.toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const pct    = v => Math.round(v * 100) + '%';
+const esc    = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 function fillClr(v)   { return v >= 0.85 ? '#70AD47' : v >= 0.70 ? '#FFD966' : '#FF6B6B'; }
 function closedClr(v) { return v <= 0.05 ? '#70AD47' : v <= 0.10 ? '#FFD966' : '#FF6B6B'; }
@@ -451,7 +495,7 @@ def upload():
 
     df["Origin"] = df.apply(get_origin, axis=1)
 
-    keep = ["NEW MIS ITEM GROUP", "Sales Order Date", "Customer Group",
+    keep = ["NEW MIS ITEM GROUP", "Parent Item", "Sales Order Date", "Customer Group",
             "Customer", "Origin"] + num_cols
     keep = [c for c in keep if c in df.columns]
 
