@@ -165,8 +165,8 @@ HTML = """<!DOCTYPE html>
       <!-- Legend -->
       <div class="ml-auto bg-white rounded-xl shadow-sm px-4 py-2 flex flex-wrap gap-5 text-xs text-gray-600">
         <span><b>Fill Rate:</b>
-          <span class="inline-block px-2 py-0.5 rounded font-bold ml-1" style="background:#70AD47">&#8805;85%</span>
-          <span class="inline-block px-2 py-0.5 rounded font-bold ml-1" style="background:#FFD966">70-84%</span>
+          <span class="inline-block px-2 py-0.5 rounded font-bold ml-1" style="background:#70AD47">&#8805;90%</span>
+          <span class="inline-block px-2 py-0.5 rounded font-bold ml-1" style="background:#FFD966">70-89%</span>
           <span class="inline-block px-2 py-0.5 rounded font-bold ml-1" style="background:#FF6B6B">&lt;70%</span>
         </span>
         <span><b>Closed %:</b>
@@ -452,7 +452,7 @@ const fmtN   = n => n.toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const pct    = v => Math.round(v * 100) + '%';
 const esc    = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-function fillClr(v)   { return v >= 0.85 ? '#70AD47' : v >= 0.70 ? '#FFD966' : '#FF6B6B'; }
+function fillClr(v)   { return v >= 0.90 ? '#70AD47' : v >= 0.70 ? '#FFD966' : '#FF6B6B'; }
 function closedClr(v) { return v <= 0.05 ? '#70AD47' : v <= 0.10 ? '#FFD966' : '#FF6B6B'; }
 function penClr(v)    { return v <= 0.05 ? '#70AD47' : v <= 0.15 ? '#FFD966' : '#FF6B6B'; }
 </script>
