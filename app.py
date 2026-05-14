@@ -132,15 +132,15 @@ HTML = """<!DOCTYPE html>
       <div class="overflow-x-auto">
         <table class="w-full text-sm border-collapse">
           <thead>
-            <tr class="bg-slate-50 border-b border-gray-200">
-              <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide w-56" id="col-label">Item Group</th>
-              <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Stock Qty (KGS)</th>
-              <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Delivered Qty (KGS)</th>
-              <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Closed KGS</th>
-              <th class="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Pending Dispatch KGS</th>
-              <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Fill Rate %</th>
-              <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Closed %</th>
-              <th class="px-4 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Pen Dis %</th>
+            <tr class="bg-slate-100 border-b-2 border-slate-300">
+              <th class="px-4 py-3 text-left text-xs font-bold text-slate-700 uppercase tracking-wide w-56" id="col-label">Item Group</th>
+              <th class="px-4 py-3 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Stock Qty (KGS)</th>
+              <th class="px-4 py-3 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Delivered Qty (KGS)</th>
+              <th class="px-4 py-3 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Closed KGS</th>
+              <th class="px-4 py-3 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Pending Dispatch KGS</th>
+              <th class="px-4 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Fill Rate %</th>
+              <th class="px-4 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Closed %</th>
+              <th class="px-4 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Pen Dis %</th>
             </tr>
           </thead>
           <tbody id="table-body"></tbody>
@@ -287,16 +287,16 @@ function renderKPIs(rows) {
   const pp = ts ? tp / ts : 0;
 
   const cards = [
-    { label: 'Total Stock (KGS)',     val: fmtN(ts), bg: '#fff',    fg: '#1e40af' },
-    { label: 'Total Delivered (KGS)', val: fmtN(td), bg: '#fff',    fg: '#065f46' },
-    { label: 'Fill Rate',             val: pct(fr),  bg: fillClr(fr), fg: '#000' },
-    { label: 'Closed %',              val: pct(cp),  bg: closedClr(cp), fg: '#000' },
-    { label: 'Pen Dis %',             val: pct(pp),  bg: penClr(pp),  fg: '#000' },
+    { label: 'Total Stock (KGS)',     val: fmtN(ts), bg: '#EFF6FF', fg: '#1e40af', lb: '#1e3a8a' },
+    { label: 'Total Delivered (KGS)', val: fmtN(td), bg: '#ECFDF5', fg: '#065f46', lb: '#064e3b' },
+    { label: 'Fill Rate',             val: pct(fr),  bg: fillClr(fr),   fg: '#000', lb: '#1f2937' },
+    { label: 'Closed %',              val: pct(cp),  bg: closedClr(cp), fg: '#000', lb: '#1f2937' },
+    { label: 'Pen Dis %',             val: pct(pp),  bg: penClr(pp),    fg: '#000', lb: '#1f2937' },
   ];
   document.getElementById('kpi-cards').innerHTML = cards.map(c => `
-    <div class="rounded-2xl shadow-sm border border-gray-100 p-4" style="background:${c.bg}">
-      <p class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">${c.label}</p>
-      <p class="text-2xl font-bold mt-1" style="color:${c.fg}">${c.val}</p>
+    <div class="rounded-2xl shadow-sm border border-gray-200 p-4" style="background:${c.bg}">
+      <p class="text-xs font-bold uppercase tracking-wider mb-1" style="color:${c.lb}">${c.label}</p>
+      <p class="text-3xl font-extrabold" style="color:${c.fg}">${c.val}</p>
     </div>`).join('');
 }
 
@@ -313,12 +313,16 @@ function switchTab(tab, btn) {
 function aggregate(rows, key) {
   const g = {};
   rows.forEach(r => {
-    const k = (r[key] != null && r[key] !== '') ? r[key] : '(blank)';
-    if (!g[k]) g[k] = { stock: 0, delivered: 0, closed: 0, pending: 0 };
-    g[k].stock     += r['Stock Qty in KGS']        || 0;
-    g[k].delivered += r['Delivered Qty (Kgs)']     || 0;
-    g[k].closed    += r['Closed Kgs']              || 0;
-    g[k].pending   += r['Pending Dispatch Kgs']    || 0;
+    const k = r[key];
+    // skip rows where the group key is blank, null, undefined, or NaN
+    if (k == null || k === '' || k !== k) return;
+    const ks = String(k).trim();
+    if (!ks) return;
+    if (!g[ks]) g[ks] = { stock: 0, delivered: 0, closed: 0, pending: 0 };
+    g[ks].stock     += r['Stock Qty in KGS']        || 0;
+    g[ks].delivered += r['Delivered Qty (Kgs)']     || 0;
+    g[ks].closed    += r['Closed Kgs']              || 0;
+    g[ks].pending   += r['Pending Dispatch Kgs']    || 0;
   });
 
   let result = Object.entries(g).map(([label, v]) => ({
