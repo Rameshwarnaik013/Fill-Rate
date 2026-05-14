@@ -27,7 +27,10 @@ def get_origin(row):
     if branch == "Haryana":
         return "CFA(Gurgaon)"
     if item_group == "Cashew":
-        return "Indore" if customer_group == "CPC KPKB" else "Udupi"
+        customer = str(row.get("Customer") or "").strip()
+        if customer_group == "CPC KPKB" or customer.upper().startswith("PAC"):
+            return "Indore"
+        return "Udupi"
     if item_group == "Munchies":
         if any(k in item_name for k in MUNCHIES_REBELA):
             return "Rebela"
