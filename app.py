@@ -18,6 +18,14 @@ ITEM_GROUP_ORIGIN = {
 }
 MUNCHIES_REBELA = ["makha shaka imli waves", "makha shaka cheese waves"]
 
+INSTAMART_CUSTOMERS = {
+    "PJTJ Technologies Private Limited",
+    "Cloudstore Retail Private Limited",
+    "Moksh Enterprises Private Limited",
+    "Jupiter Kart Private Limited",
+    "Cloudkart Ventures Private Limited",
+}
+
 
 def get_origin(row):
     branch = str(row.get("Branch") or "").strip()
@@ -117,7 +125,7 @@ HTML = """<!DOCTYPE html>
     </div>
 
     <!-- KPI cards -->
-    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4" id="kpi-cards"></div>
+    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4" id="kpi-cards"></div>
 
     <!-- Table card -->
     <div class="bg-white rounded-2xl shadow-sm overflow-hidden">
@@ -189,7 +197,9 @@ HTML = """<!DOCTYPE html>
 // ── State ─────────────────────────────────────────────────────────────────────
 let allRows = [];
 let currentTab = 'item-group';
-let expandedGroups = new Set();
+let expandedGroups    = new Set();   // Item Group → Parent Item
+let expandedCGRows    = new Set();   // Customer Group → Customer
+let expandedCustomers = new Set();   // Amazon / Flipkart → sub-channels
 
 const TABS = {
   'item-group':      { key: 'NEW MIS ITEM GROUP', label: 'Item Group' },
@@ -295,11 +305,13 @@ function renderKPIs(rows) {
   const pp = ts ? tp / ts : 0;
 
   const cards = [
-    { label: 'Total Stock (KGS)',     val: fmtN(ts), bg: '#EFF6FF', fg: '#1e40af', lb: '#1e3a8a' },
-    { label: 'Total Delivered (KGS)', val: fmtN(td), bg: '#ECFDF5', fg: '#065f46', lb: '#064e3b' },
-    { label: 'Fill Rate',             val: pct(fr),  bg: fillClr(fr),   fg: '#000', lb: '#1f2937' },
-    { label: 'Closed %',              val: pct(cp),  bg: closedClr(cp), fg: '#000', lb: '#1f2937' },
-    { label: 'Pen Dis %',             val: pct(pp),  bg: penClr(pp),    fg: '#000', lb: '#1f2937' },
+    { label: 'Total Stock (KGS)',        val: fmtN(ts), bg: '#EFF6FF', fg: '#1e40af', lb: '#1e3a8a' },
+    { label: 'Total Delivered (KGS)',    val: fmtN(td), bg: '#ECFDF5', fg: '#065f46', lb: '#064e3b' },
+    { label: 'Closed KGS',              val: fmtN(tc), bg: '#FFF7ED', fg: '#9a3412', lb: '#7c2d12' },
+    { label: 'Pending Dispatch KGS',    val: fmtN(tp), bg: '#FAF5FF', fg: '#7e22ce', lb: '#6b21a8' },
+    { label: 'Fill Rate',               val: pct(fr),  bg: fillClr(fr),   fg: '#000', lb: '#1f2937' },
+    { label: 'Closed %',                val: pct(cp),  bg: closedClr(cp), fg: '#000', lb: '#1f2937' },
+    { label: 'Pen Dis %',               val: pct(pp),  bg: penClr(pp),    fg: '#000', lb: '#1f2937' },
   ];
   document.getElementById('kpi-cards').innerHTML = cards.map(c => `
     <div class="rounded-2xl shadow-sm border border-gray-200 p-4" style="background:${c.bg}">
@@ -375,44 +387,142 @@ function metricCells(r, size) {
     <td class="${p} text-center font-bold" style="background:${penClr(r.penDis)}">${pct(r.penDis)}</td>`;
 }
 
+// ── Customer tab: group Amazon & Flipkart sub-channels under parent ───────────
+function getCustomerParent(name) {
+  if (!name) return null;
+  if (name.startsWith('Amazon Retail India'))              return 'Amazon Retail India';
+  if (name.startsWith('Flipkart India Private Limited'))   return 'Flipkart India Private Limited';
+  return null;
+}
+
+function aggregateCustomersTab(rows) {
+  const g = {};
+  const toAcc = () => ({ stock: 0, delivered: 0, closed: 0, pending: 0 });
+
+  rows.forEach(r => {
+    const customer = (r['Customer'] || '').trim();
+    if (!customer) return;
+    const parent = getCustomerParent(customer);
+    const key = parent || customer;
+
+    if (!g[key]) g[key] = { ...toAcc(), isParent: !!parent, children: {} };
+    g[key].stock     += r['Stock Qty in KGS']     || 0;
+    g[key].delivered += r['Delivered Qty (Kgs)']  || 0;
+    g[key].closed    += r['Closed Kgs']           || 0;
+    g[key].pending   += r['Pending Dispatch Kgs'] || 0;
+
+    if (parent) {
+      if (!g[key].children[customer]) g[key].children[customer] = toAcc();
+      g[key].children[customer].stock     += r['Stock Qty in KGS']     || 0;
+      g[key].children[customer].delivered += r['Delivered Qty (Kgs)']  || 0;
+      g[key].children[customer].closed    += r['Closed Kgs']           || 0;
+      g[key].children[customer].pending   += r['Pending Dispatch Kgs'] || 0;
+    }
+  });
+
+  const toRow = (label, v) => ({
+    label,
+    stock: v.stock, delivered: v.delivered, closed: v.closed, pending: v.pending,
+    fillRate:  v.stock ? v.delivered / v.stock : 0,
+    closedPct: v.stock ? v.closed    / v.stock : 0,
+    penDis:    v.stock ? v.pending   / v.stock : 0,
+  });
+
+  let result = Object.entries(g).map(([label, v]) => ({
+    ...toRow(label, v),
+    isParent: v.isParent,
+    children: Object.entries(v.children || {})
+      .map(([cl, cv]) => toRow(cl, cv))
+      .sort((a, b) => b.stock - a.stock),
+  })).sort((a, b) => b.stock - a.stock);
+
+  const tS = result.reduce((s, r) => s + r.stock, 0);
+  const tD = result.reduce((s, r) => s + r.delivered, 0);
+  const tC = result.reduce((s, r) => s + r.closed, 0);
+  const tP = result.reduce((s, r) => s + r.pending, 0);
+  result.push({
+    ...toRow('Grand Total', { stock: tS, delivered: tD, closed: tC, pending: tP }),
+    isTotal: true, isParent: false, children: [],
+  });
+  return result;
+}
+
+// ── Expandable row helpers ────────────────────────────────────────────────────
+function expandableRow(attr, label, r, expanded) {
+  return `<tr class="expandable-row border-t border-gray-100" ${attr}="${esc(label)}">
+    <td class="px-4 py-2.5 text-sm text-gray-800 font-medium">
+      <span class="inline-block w-5 text-blue-500 text-[10px] select-none">${expanded ? '&#9660;' : '&#9654;'}</span>${label}
+    </td>${metricCells(r, 'md')}</tr>`;
+}
+
+function childRow(label, r) {
+  return `<tr class="child-row border-t border-blue-100">
+    <td class="px-4 py-2 text-xs text-blue-800 pl-10 font-medium">&#8627; ${label}</td>
+    ${metricCells(r, 'sm')}</tr>`;
+}
+
+function regularRow(r) {
+  return `<tr class="${r.isTotal ? 'grand-total' : ''} border-t border-gray-100">
+    <td class="px-4 py-2.5 text-sm text-gray-800">${r.label}</td>
+    ${metricCells(r, 'md')}</tr>`;
+}
+
+// ── Table rendering ───────────────────────────────────────────────────────────
 function renderTable(tab, rows) {
-  const data = aggregate(rows, TABS[tab].key);
   let html = '';
 
-  for (const r of data) {
-    if (tab === 'item-group' && !r.isTotal) {
-      const exp = expandedGroups.has(r.label);
-      html += `<tr class="expandable-row border-t border-gray-100" data-group="${esc(r.label)}">
-        <td class="px-4 py-2.5 text-sm text-gray-800 font-medium">
-          <span class="inline-block w-5 text-blue-500 text-[10px] select-none">${exp ? '&#9660;' : '&#9654;'}</span>${r.label}
-        </td>${metricCells(r, 'md')}</tr>`;
-
-      if (exp) {
-        const subRows = rows.filter(row => row['NEW MIS ITEM GROUP'] === r.label);
-        const subData = aggregate(subRows, 'Parent Item').filter(s => !s.isTotal);
-        for (const s of subData) {
-          html += `<tr class="child-row border-t border-blue-100">
-            <td class="px-4 py-2 text-xs text-blue-800 pl-10 font-medium">&#8627; ${s.label}</td>
-            ${metricCells(s, 'sm')}</tr>`;
-        }
+  if (tab === 'customer') {
+    for (const r of aggregateCustomersTab(rows)) {
+      if (r.isTotal) { html += regularRow(r); continue; }
+      if (r.isParent) {
+        const exp = expandedCustomers.has(r.label);
+        html += expandableRow('data-customer', r.label, r, exp);
+        if (exp) r.children.forEach(c => { html += childRow(c.label, c); });
+      } else {
+        html += regularRow(r);
       }
-    } else {
-      html += `<tr class="${r.isTotal ? 'grand-total' : ''} border-t border-gray-100">
-        <td class="px-4 py-2.5 text-sm text-gray-800">${r.label}</td>
-        ${metricCells(r, 'md')}</tr>`;
+    }
+  } else {
+    const data = aggregate(rows, TABS[tab].key);
+    for (const r of data) {
+      if (tab === 'item-group' && !r.isTotal) {
+        const exp = expandedGroups.has(r.label);
+        html += expandableRow('data-group', r.label, r, exp);
+        if (exp) {
+          aggregate(rows.filter(x => x['NEW MIS ITEM GROUP'] === r.label), 'Parent Item')
+            .filter(s => !s.isTotal)
+            .forEach(s => { html += childRow(s.label, s); });
+        }
+      } else if (tab === 'customer-group' && !r.isTotal) {
+        const exp = expandedCGRows.has(r.label);
+        html += expandableRow('data-cg', r.label, r, exp);
+        if (exp) {
+          aggregate(rows.filter(x => x['Customer Group'] === r.label), 'Customer')
+            .filter(s => !s.isTotal)
+            .forEach(s => { html += childRow(s.label, s); });
+        }
+      } else {
+        html += regularRow(r);
+      }
     }
   }
 
   document.getElementById('table-body').innerHTML = html;
 }
 
-// ── Item Group row click → toggle Parent Item drill-down ──────────────────────
+// ── Unified click handler for all expandable tabs ────────────────────────────
 document.getElementById('table-body').addEventListener('click', e => {
-  if (currentTab !== 'item-group') return;
-  const tr = e.target.closest('tr[data-group]');
+  const handlers = {
+    'item-group':     ['tr[data-group]',    'group',    expandedGroups],
+    'customer-group': ['tr[data-cg]',       'cg',       expandedCGRows],
+    'customer':       ['tr[data-customer]', 'customer', expandedCustomers],
+  };
+  const h = handlers[currentTab];
+  if (!h) return;
+  const tr = e.target.closest(h[0]);
   if (!tr) return;
-  const label = tr.dataset.group;
-  expandedGroups.has(label) ? expandedGroups.delete(label) : expandedGroups.add(label);
+  const label = tr.dataset[h[1]];
+  h[2].has(label) ? h[2].delete(label) : h[2].add(label);
   renderTable(currentTab, filteredRows());
 });
 
@@ -494,6 +604,15 @@ def upload():
         )
 
     df["Origin"] = df.apply(get_origin, axis=1)
+
+    # Override Customer Group for Instamart customers
+    if "Customer" in df.columns:
+        df["Customer Group"] = df.apply(
+            lambda r: "Instamart"
+            if str(r.get("Customer") or "").strip() in INSTAMART_CUSTOMERS
+            else r.get("Customer Group"),
+            axis=1,
+        )
 
     keep = ["NEW MIS ITEM GROUP", "Parent Item", "Sales Order Date", "Customer Group",
             "Customer", "Origin"] + num_cols
