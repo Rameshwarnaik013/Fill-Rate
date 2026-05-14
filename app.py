@@ -448,7 +448,9 @@ def upload():
             "Customer", "Origin"] + num_cols
     keep = [c for c in keep if c in df.columns]
 
-    rows = df[keep].where(pd.notnull(df[keep]), None).to_dict("records")
+    # Use pandas JSON serialiser so NaN → null (valid JSON); then parse back to list
+    import json
+    rows = json.loads(df[keep].to_json(orient="records"))
     return jsonify({"rows": rows})
 
 
