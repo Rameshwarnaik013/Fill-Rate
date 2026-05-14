@@ -26,6 +26,12 @@ INSTAMART_CUSTOMERS = {
     "Cloudkart Ventures Private Limited",
 }
 
+CUSTOMER_RENAMES = {
+    "FK-Grocery-VS48860":   "FK-Grocery",
+    "FK-Hyperlocal-VS46867": "FK-Hyperlocal",
+    "FK-Alpha-VS46867":     "FK-Alpha",
+}
+
 
 def get_origin(row):
     branch = str(row.get("Branch") or "").strip()
@@ -651,6 +657,10 @@ def upload():
             if str(r.get("Customer") or "").strip() in INSTAMART_CUSTOMERS
             else r.get("Customer Group"),
             axis=1,
+        )
+        # Rename specific customer names
+        df["Customer"] = df["Customer"].apply(
+            lambda v: CUSTOMER_RENAMES.get(str(v).strip(), v) if pd.notna(v) else v
         )
 
     keep = ["NEW MIS ITEM GROUP", "Parent Item", "Sales Order Date", "Customer Group",
