@@ -68,7 +68,7 @@ HTML = """<!DOCTYPE html>
   .tab-btn:hover:not(.active) { color: #374151; border-bottom-color: #d1d5db; }
   .drop-zone { border: 2px dashed #cbd5e1; transition: all .2s; }
   .drop-zone.drag-over { border-color: #2563eb; background: #eff6ff; }
-  tr.grand-total td { background: #e2e8f0 !important; font-weight: 700; }
+  tr.grand-total td { background: #cbd5e1 !important; font-weight: 800; color: #0f172a; }
   tbody tr:not(.grand-total):not(.child-row):hover td { background: #f8fafc; }
   thead th { position: sticky; top: 0; z-index: 1; }
   tr.expandable-row { cursor: pointer; }
@@ -158,17 +158,17 @@ HTML = """<!DOCTYPE html>
 
       <!-- Table -->
       <div class="overflow-x-auto">
-        <table class="w-full border-collapse" style="font-size:12px;">
+        <table class="w-full border-collapse" style="font-size:13px;font-weight:500;">
           <thead>
             <tr class="bg-slate-100 border-b-2 border-slate-300">
-              <th class="px-3 py-2 text-left text-xs font-bold text-slate-700 uppercase tracking-wide" id="col-label">Item Group</th>
-              <th class="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Stock (KGS)</th>
-              <th class="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Delivered (KGS)</th>
-              <th class="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Closed KGS</th>
-              <th class="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Pending KGS</th>
-              <th class="px-3 py-2 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Fill Rate %</th>
-              <th class="px-3 py-2 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Closed %</th>
-              <th class="px-3 py-2 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Pen Dis %</th>
+              <th class="px-2 py-2 text-left text-xs font-bold text-slate-800 uppercase tracking-wide" id="col-label">Item Group</th>
+              <th class="px-2 py-2 text-right text-xs font-bold text-slate-800 uppercase tracking-wide">Stock (KGS)</th>
+              <th class="px-2 py-2 text-right text-xs font-bold text-slate-800 uppercase tracking-wide">Delivered (KGS)</th>
+              <th class="px-2 py-2 text-right text-xs font-bold text-slate-800 uppercase tracking-wide">Closed KGS</th>
+              <th class="px-2 py-2 text-right text-xs font-bold text-slate-800 uppercase tracking-wide">Pending KGS</th>
+              <th class="px-2 py-2 text-center text-xs font-bold text-slate-800 uppercase tracking-wide">Fill Rate %</th>
+              <th class="px-2 py-2 text-center text-xs font-bold text-slate-800 uppercase tracking-wide">Closed %</th>
+              <th class="px-2 py-2 text-center text-xs font-bold text-slate-800 uppercase tracking-wide">Pen Dis %</th>
             </tr>
           </thead>
           <tbody id="table-body"></tbody>
@@ -405,15 +405,15 @@ function aggregate(rows, key) {
 
 // ── Table rendering ───────────────────────────────────────────────────────────
 function metricCells(r, size) {
-  const p = size === 'sm' ? 'px-3 py-1' : 'px-3 py-1.5';
+  const p = size === 'sm' ? 'px-2 py-0.5' : 'px-2 py-1';
   return `
-    <td class="${p} text-right text-gray-700">${fmtN(r.stock)}</td>
-    <td class="${p} text-right text-gray-700">${fmtN(r.delivered)}</td>
-    <td class="${p} text-right text-gray-700">${r.closed  > 0 ? fmtN(r.closed)  : '-'}</td>
-    <td class="${p} text-right text-gray-700">${r.pending > 0 ? fmtN(r.pending) : '-'}</td>
-    <td class="${p} text-center font-bold" style="background:${fillClr(r.fillRate)}">${pct(r.fillRate)}</td>
-    <td class="${p} text-center font-bold" style="background:${closedClr(r.closedPct)}">${pct(r.closedPct)}</td>
-    <td class="${p} text-center font-bold" style="background:${penClr(r.penDis)}">${pct(r.penDis)}</td>`;
+    <td class="${p} text-right text-gray-900 font-semibold">${fmtN(r.stock)}</td>
+    <td class="${p} text-right text-gray-900 font-semibold">${fmtN(r.delivered)}</td>
+    <td class="${p} text-right text-gray-900 font-semibold">${r.closed  > 0 ? fmtN(r.closed)  : '-'}</td>
+    <td class="${p} text-right text-gray-900 font-semibold">${r.pending > 0 ? fmtN(r.pending) : '-'}</td>
+    <td class="${p} text-center font-extrabold" style="background:${fillClr(r.fillRate)};color:#1a1a1a">${pct(r.fillRate)}</td>
+    <td class="${p} text-center font-extrabold" style="background:${closedClr(r.closedPct)};color:#1a1a1a">${pct(r.closedPct)}</td>
+    <td class="${p} text-center font-extrabold" style="background:${penClr(r.penDis)};color:#1a1a1a">${pct(r.penDis)}</td>`;
 }
 
 // ── Customer tab: group Amazon & Flipkart sub-channels under parent ───────────
@@ -478,21 +478,21 @@ function aggregateCustomersTab(rows) {
 
 // ── Expandable row helpers ────────────────────────────────────────────────────
 function expandableRow(attr, label, r, expanded) {
-  return `<tr class="expandable-row border-t border-gray-100" ${attr}="${esc(label)}">
-    <td class="px-3 py-1.5 text-gray-800 font-medium">
+  return `<tr class="expandable-row border-t border-gray-200" ${attr}="${esc(label)}">
+    <td class="px-2 py-1 text-gray-900 font-semibold">
       <span class="inline-block w-4 text-blue-500 text-[10px] select-none">${expanded ? '&#9660;' : '&#9654;'}</span>${label}
     </td>${metricCells(r, 'md')}</tr>`;
 }
 
 function childRow(label, r) {
-  return `<tr class="child-row border-t border-blue-100">
-    <td class="px-3 py-1 text-blue-800 pl-8 font-medium">&#8627; ${label}</td>
+  return `<tr class="child-row border-t border-blue-200">
+    <td class="px-2 py-0.5 text-blue-900 pl-7 font-semibold">&#8627; ${label}</td>
     ${metricCells(r, 'sm')}</tr>`;
 }
 
 function regularRow(r) {
-  return `<tr class="${r.isTotal ? 'grand-total' : ''} border-t border-gray-100">
-    <td class="px-3 py-1.5 text-gray-800">${r.label}</td>
+  return `<tr class="${r.isTotal ? 'grand-total' : ''} border-t border-gray-200">
+    <td class="px-2 py-1 text-gray-900 font-semibold">${r.label}</td>
     ${metricCells(r, 'md')}</tr>`;
 }
 
@@ -536,16 +536,16 @@ function renderTable(tab, rows) {
                 const ck = r.label + '||' + s.label;
                 const cExp = expandedCGCustomers.has(ck);
                 // Render as expandable child row
-                html += `<tr class="child-row expandable-row border-t border-blue-100" data-cg-customer="${esc(ck)}">
-                  <td class="px-3 py-1 text-blue-800 pl-8 font-medium">
+                html += `<tr class="child-row expandable-row border-t border-blue-200" data-cg-customer="${esc(ck)}">
+                  <td class="px-2 py-0.5 text-blue-900 pl-7 font-semibold">
                     <span class="inline-block w-4 text-blue-500 text-[10px] select-none">${cExp ? '&#9660;' : '&#9654;'}</span>&#8627; ${s.label}
                   </td>${metricCells(s, 'sm')}</tr>`;
                 if (cExp) {
                   aggregate(cgRows.filter(x => x['Customer'] === s.label), 'Client Type')
                     .filter(ct => !ct.isTotal)
                     .forEach(ct => {
-                      html += `<tr class="grandchild-row border-t border-sky-100">
-                        <td class="px-3 py-1 text-sky-900 pl-14 font-medium">&#8627; ${ct.label || '(No Client Type)'}</td>
+                      html += `<tr class="grandchild-row border-t border-sky-200">
+                        <td class="px-2 py-0.5 text-sky-900 pl-12 font-semibold">&#8627; ${ct.label || '(No Client Type)'}</td>
                         ${metricCells(ct, 'sm')}</tr>`;
                     });
                 }
