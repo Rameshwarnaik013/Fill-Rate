@@ -60,8 +60,9 @@ HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Fill Rate Dashboard</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size:13px; }
   .tab-btn { border-bottom: 3px solid transparent; transition: all .15s; }
   .tab-btn.active { border-bottom-color: #2563eb; color: #2563eb; }
   .tab-btn:hover:not(.active) { color: #374151; border-bottom-color: #d1d5db; }
@@ -78,20 +79,22 @@ HTML = """<!DOCTYPE html>
   tr[data-cg-customer]:hover td { background: #BAE6FD !important; }
   tr.grandchild-row td { background: #E0F2FE; }
   tr.grandchild-row:hover td { background: #BAE6FD !important; }
+  /* compact table */
+  table td, table th { white-space: nowrap; }
 </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
 
 <!-- Header -->
 <header class="bg-white border-b shadow-sm">
-  <div class="max-w-screen-2xl mx-auto px-6 py-3 flex items-center gap-3">
+  <div class="max-w-screen-xl mx-auto px-4 py-3 flex items-center gap-3">
     <span class="text-2xl">&#128230;</span>
     <h1 class="text-xl font-semibold text-gray-800">Fill Rate Dashboard</h1>
     <span class="ml-auto text-xs text-gray-400" id="file-badge"></span>
   </div>
 </header>
 
-<div class="max-w-screen-2xl mx-auto px-6 py-6 space-y-5">
+<div class="max-w-screen-xl mx-auto px-4 py-3 space-y-3">
 
   <!-- Upload -->
   <div class="drop-zone bg-white rounded-2xl p-10 text-center cursor-pointer select-none" id="drop-zone"
@@ -155,21 +158,33 @@ HTML = """<!DOCTYPE html>
 
       <!-- Table -->
       <div class="overflow-x-auto">
-        <table class="w-full text-sm border-collapse">
+        <table class="w-full border-collapse" style="font-size:12px;">
           <thead>
             <tr class="bg-slate-100 border-b-2 border-slate-300">
-              <th class="px-4 py-3 text-left text-xs font-bold text-slate-700 uppercase tracking-wide w-56" id="col-label">Item Group</th>
-              <th class="px-4 py-3 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Stock Qty (KGS)</th>
-              <th class="px-4 py-3 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Delivered Qty (KGS)</th>
-              <th class="px-4 py-3 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Closed KGS</th>
-              <th class="px-4 py-3 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Pending Dispatch KGS</th>
-              <th class="px-4 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Fill Rate %</th>
-              <th class="px-4 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Closed %</th>
-              <th class="px-4 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Pen Dis %</th>
+              <th class="px-3 py-2 text-left text-xs font-bold text-slate-700 uppercase tracking-wide" id="col-label">Item Group</th>
+              <th class="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Stock (KGS)</th>
+              <th class="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Delivered (KGS)</th>
+              <th class="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Closed KGS</th>
+              <th class="px-3 py-2 text-right text-xs font-bold text-slate-700 uppercase tracking-wide">Pending KGS</th>
+              <th class="px-3 py-2 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Fill Rate %</th>
+              <th class="px-3 py-2 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Closed %</th>
+              <th class="px-3 py-2 text-center text-xs font-bold text-slate-700 uppercase tracking-wide">Pen Dis %</th>
             </tr>
           </thead>
           <tbody id="table-body"></tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="bg-white rounded-2xl shadow-sm p-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div>
+        <p class="text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">Fill Rate % by Group</p>
+        <div style="position:relative;height:280px"><canvas id="chart-fillrate"></canvas></div>
+      </div>
+      <div>
+        <p class="text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">Volume Breakdown (KGS)</p>
+        <div style="position:relative;height:280px"><canvas id="chart-volume"></canvas></div>
       </div>
     </div>
 
@@ -303,6 +318,7 @@ function applyFilters() {
   const rows = filteredRows();
   renderKPIs(rows);
   renderTable(currentTab, rows);
+  renderCharts(currentTab, rows);
 }
 
 // ── KPI Cards ─────────────────────────────────────────────────────────────────
@@ -337,7 +353,9 @@ function switchTab(tab, btn) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('col-label').textContent = TABS[tab].label;
-  renderTable(tab, filteredRows());
+  const rows = filteredRows();
+  renderTable(tab, rows);
+  renderCharts(tab, rows);
 }
 
 // ── Aggregation ───────────────────────────────────────────────────────────────
@@ -387,7 +405,7 @@ function aggregate(rows, key) {
 
 // ── Table rendering ───────────────────────────────────────────────────────────
 function metricCells(r, size) {
-  const p = size === 'sm' ? 'px-4 py-2 text-xs' : 'px-4 py-2.5 text-sm';
+  const p = size === 'sm' ? 'px-3 py-1' : 'px-3 py-1.5';
   return `
     <td class="${p} text-right text-gray-700">${fmtN(r.stock)}</td>
     <td class="${p} text-right text-gray-700">${fmtN(r.delivered)}</td>
@@ -461,20 +479,20 @@ function aggregateCustomersTab(rows) {
 // ── Expandable row helpers ────────────────────────────────────────────────────
 function expandableRow(attr, label, r, expanded) {
   return `<tr class="expandable-row border-t border-gray-100" ${attr}="${esc(label)}">
-    <td class="px-4 py-2.5 text-sm text-gray-800 font-medium">
-      <span class="inline-block w-5 text-blue-500 text-[10px] select-none">${expanded ? '&#9660;' : '&#9654;'}</span>${label}
+    <td class="px-3 py-1.5 text-gray-800 font-medium">
+      <span class="inline-block w-4 text-blue-500 text-[10px] select-none">${expanded ? '&#9660;' : '&#9654;'}</span>${label}
     </td>${metricCells(r, 'md')}</tr>`;
 }
 
 function childRow(label, r) {
   return `<tr class="child-row border-t border-blue-100">
-    <td class="px-4 py-2 text-xs text-blue-800 pl-10 font-medium">&#8627; ${label}</td>
+    <td class="px-3 py-1 text-blue-800 pl-8 font-medium">&#8627; ${label}</td>
     ${metricCells(r, 'sm')}</tr>`;
 }
 
 function regularRow(r) {
   return `<tr class="${r.isTotal ? 'grand-total' : ''} border-t border-gray-100">
-    <td class="px-4 py-2.5 text-sm text-gray-800">${r.label}</td>
+    <td class="px-3 py-1.5 text-gray-800">${r.label}</td>
     ${metricCells(r, 'md')}</tr>`;
 }
 
@@ -519,15 +537,15 @@ function renderTable(tab, rows) {
                 const cExp = expandedCGCustomers.has(ck);
                 // Render as expandable child row
                 html += `<tr class="child-row expandable-row border-t border-blue-100" data-cg-customer="${esc(ck)}">
-                  <td class="px-4 py-2 text-xs text-blue-800 pl-10 font-medium">
-                    <span class="inline-block w-5 text-blue-500 text-[10px] select-none">${cExp ? '&#9660;' : '&#9654;'}</span>&#8627; ${s.label}
+                  <td class="px-3 py-1 text-blue-800 pl-8 font-medium">
+                    <span class="inline-block w-4 text-blue-500 text-[10px] select-none">${cExp ? '&#9660;' : '&#9654;'}</span>&#8627; ${s.label}
                   </td>${metricCells(s, 'sm')}</tr>`;
                 if (cExp) {
                   aggregate(cgRows.filter(x => x['Customer'] === s.label), 'Client Type')
                     .filter(ct => !ct.isTotal)
                     .forEach(ct => {
                       html += `<tr class="grandchild-row border-t border-sky-100">
-                        <td class="px-4 py-2 text-xs text-sky-900 pl-20 font-medium">&#8627; ${ct.label || '(No Client Type)'}</td>
+                        <td class="px-3 py-1 text-sky-900 pl-14 font-medium">&#8627; ${ct.label || '(No Client Type)'}</td>
                         ${metricCells(ct, 'sm')}</tr>`;
                     });
                 }
@@ -610,6 +628,66 @@ const esc    = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace
 function fillClr(v)   { return v >= 0.90 ? '#70AD47' : v >= 0.70 ? '#FFD966' : '#FF6B6B'; }
 function closedClr(v) { return v <= 0.05 ? '#70AD47' : v <= 0.10 ? '#FFD966' : '#FF6B6B'; }
 function penClr(v)    { return v <= 0.05 ? '#70AD47' : v <= 0.15 ? '#FFD966' : '#FF6B6B'; }
+
+// ── Charts ────────────────────────────────────────────────────────────────────
+let _chartFR = null, _chartVol = null;
+
+function renderCharts(tab, rows) {
+  const raw = tab === 'customer' ? aggregateCustomersTab(rows) : aggregate(rows, TABS[tab].key);
+  const data = raw.filter(r => !r.isTotal).slice(0, 15);  // top 15 rows, skip grand total
+  const labels = data.map(r => r.label.length > 20 ? r.label.slice(0,18)+'…' : r.label);
+
+  // ── Fill Rate % horizontal bar ─────────────────────────────────────────────
+  const frCtx = document.getElementById('chart-fillrate').getContext('2d');
+  if (_chartFR) _chartFR.destroy();
+  _chartFR = new Chart(frCtx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Fill Rate %',  data: data.map(r => +(r.fillRate*100).toFixed(1)),
+          backgroundColor: data.map(r => fillClr(r.fillRate)), borderRadius: 3 },
+        { label: 'Closed %',     data: data.map(r => +(r.closedPct*100).toFixed(1)),
+          backgroundColor: data.map(r => closedClr(r.closedPct) + 'cc'), borderRadius: 3 },
+        { label: 'Pen Dis %',    data: data.map(r => +(r.penDis*100).toFixed(1)),
+          backgroundColor: data.map(r => penClr(r.penDis) + 'cc'), borderRadius: 3 },
+      ]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 10 } } },
+                 tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.x}%` } } },
+      scales: {
+        x: { max: 100, ticks: { callback: v => v+'%', font: { size: 10 } }, grid: { color: '#f1f5f9' } },
+        y: { ticks: { font: { size: 10 } } }
+      }
+    }
+  });
+
+  // ── Volume stacked bar ─────────────────────────────────────────────────────
+  const volCtx = document.getElementById('chart-volume').getContext('2d');
+  if (_chartVol) _chartVol.destroy();
+  _chartVol = new Chart(volCtx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Delivered', data: data.map(r => r.delivered), backgroundColor: '#70AD47cc', borderRadius: 2 },
+        { label: 'Closed',    data: data.map(r => r.closed),    backgroundColor: '#FFD966cc', borderRadius: 2 },
+        { label: 'Pending',   data: data.map(r => r.pending),   backgroundColor: '#FF6B6Bcc', borderRadius: 2 },
+      ]
+    },
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 10 } } },
+                 tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtN(ctx.parsed.x)} KGS` } } },
+      scales: {
+        x: { stacked: true, ticks: { font: { size: 10 } }, grid: { color: '#f1f5f9' } },
+        y: { stacked: true, ticks: { font: { size: 10 } } }
+      }
+    }
+  });
+}
 </script>
 </body>
 </html>"""
