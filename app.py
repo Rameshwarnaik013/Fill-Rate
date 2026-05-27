@@ -61,6 +61,7 @@ HTML = """<!DOCTYPE html>
 <title>Fill Rate Dashboard</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size:13px; }
   .tab-btn { border-bottom: 3px solid transparent; transition: all .15s; }
@@ -250,6 +251,7 @@ HTML = """<!DOCTYPE html>
 // ── State ─────────────────────────────────────────────────────────────────────
 let allRows = [];
 let selectedFile = null;
+let parsedCsvData = null;   // CSV string produced by SheetJS in-browser
 let currentTab = 'item-group';
 let expandedGroups      = new Set();  // Item Group → Parent Item
 let expandedCGRows      = new Set();  // Customer Group → Customer
@@ -294,20 +296,75 @@ fileInput.addEventListener('change', e => {
   if (file) previewFile(file);
 });
 
-function previewFile(file) {
+// Columns the server actually needs — everything else is stripped to shrink payload
+const NEEDED_COLS = [
+  'NEW MIS ITEM GROUP', 'Parent Item', 'Sales Order Date',
+  'Customer Group', 'Customer', 'Client Type',
+  'Branch', 'Item Name',
+  'Stock Qty in KGS', 'Delivered Qty (Kgs)', 'Closed Kgs', 'Pending Dispatch Kgs'
+];
+
+async function previewFile(file) {
   selectedFile = file;
+  parsedCsvData = null;
   const mb = (file.size / 1024 / 1024).toFixed(1);
-  document.getElementById('selected-file-name').textContent = file.name + '   (' + mb + ' MB)';
-  setMsg('');
-  // Hide drop zone, show ready bar
+  document.getElementById('selected-file-name').textContent = file.name + '  (' + mb + ' MB)';
+  setMsg('⏳ Reading Excel and compressing…');
+  // Show ready bar immediately so user sees progress
   dz.style.display = 'none';
   document.getElementById('file-ready-bar').style.display = 'block';
-  // Ensure button is in default state
+
+  try {
+    const ab = await file.arrayBuffer();
+    const wb = XLSX.read(ab, { type: 'array', cellDates: true, dateNF: 'yyyy-mm-dd' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+
+    // Read all rows as formatted strings (dates come out as yyyy-mm-dd)
+    const allData = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd', defval: '' });
+
+    if (allData.length > 0) {
+      const fileHeaders = Object.keys(allData[0]);
+
+      // Map each needed column → actual header in file (case/space-insensitive)
+      const headerMap = {};
+      NEEDED_COLS.forEach(need => {
+        const match =
+          fileHeaders.find(h => h.trim() === need) ||
+          fileHeaders.find(h => h.trim().toLowerCase() === need.toLowerCase()) ||
+          fileHeaders.find(h => h.trim().toLowerCase().replace(/\\s+/g,'') === need.toLowerCase().replace(/\\s+/g,''));
+        if (match) headerMap[need] = match;
+      });
+
+      // Build slim rows with canonical header names
+      const slimRows = allData.map(row => {
+        const r = {};
+        for (const [canonical, actual] of Object.entries(headerMap)) {
+          r[canonical] = row[actual] !== undefined ? row[actual] : '';
+        }
+        return r;
+      });
+
+      // Convert slim rows → CSV string
+      const slimWs = XLSX.utils.json_to_sheet(slimRows);
+      parsedCsvData = XLSX.utils.sheet_to_csv(slimWs);
+
+      const kb = Math.round(new Blob([parsedCsvData]).size / 1024);
+      setMsg('✓ ' + allData.length.toLocaleString() + ' rows · compressed to ' + kb + ' KB  (was ' + mb + ' MB)');
+    } else {
+      setMsg('⚠ Excel appears empty — check the file');
+    }
+  } catch (e) {
+    console.error('SheetJS error:', e);
+    parsedCsvData = null;
+    setMsg('⚠ Could not pre-read Excel (' + e.message + '). Will try direct upload.');
+  }
+
   resetBtn();
 }
 
 function resetFileSelection() {
   selectedFile = null;
+  parsedCsvData = null;
   fileInput.value = '';
   document.getElementById('file-ready-bar').style.display = 'none';
   dz.style.display = 'block';
@@ -342,10 +399,18 @@ function triggerGenerate() {
 
 async function uploadFile(file) {
   const mb = (file.size / 1024 / 1024).toFixed(1);
-  setMsg('Uploading ' + file.name + ' (' + mb + ' MB)…');
-
   const fd = new FormData();
-  fd.append('file', file);
+
+  if (parsedCsvData) {
+    // Upload the slim CSV extracted in-browser — far smaller than the raw Excel
+    const kb = Math.round(new Blob([parsedCsvData]).size / 1024);
+    setMsg('Uploading ' + kb + ' KB CSV (from ' + mb + ' MB Excel)…');
+    fd.append('csv_data', parsedCsvData);
+  } else {
+    // Fallback: upload the original file
+    setMsg('Uploading ' + file.name + ' (' + mb + ' MB)…');
+    fd.append('file', file);
+  }
   try {
     const res = await fetch('/api/upload', { method: 'POST', body: fd });
 
@@ -817,14 +882,22 @@ def index():
 def upload():
     import json as _json
     try:
-        if "file" not in request.files:
+        csv_data = request.form.get("csv_data")
+        if csv_data:
+            # Browser converted Excel → CSV via SheetJS before uploading
+            from io import StringIO
+            try:
+                df = pd.read_csv(StringIO(csv_data))
+            except Exception as e:
+                return jsonify({"error": f"Could not parse CSV data: {e}"}), 400
+        elif "file" in request.files:
+            file = request.files["file"]
+            try:
+                df = pd.read_excel(file)
+            except Exception as e:
+                return jsonify({"error": f"Could not read Excel file: {e}"}), 400
+        else:
             return jsonify({"error": "No file provided"}), 400
-
-        file = request.files["file"]
-        try:
-            df = pd.read_excel(file)
-        except Exception as e:
-            return jsonify({"error": f"Could not read Excel file: {e}"}), 400
 
         # ── Normalise column names (strip leading/trailing whitespace) ──────────
         df.columns = [str(c).strip() for c in df.columns]
