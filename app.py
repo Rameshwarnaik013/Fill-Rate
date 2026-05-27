@@ -266,6 +266,50 @@ const TABS = {
   'origin':          { key: 'Origin',             label: 'Origin'     },
 };
 
+// ── Data-processing constants (mirrors Python server logic exactly) ────────────
+const ITEM_GROUP_ORIGIN_JS = {
+  "Almonds":"Indore","Roasted Almonds":"Indore","Apricots":"Indore",
+  "Roasted & Flavoured Cashew":"Indore","Dates":"Indore","Healthy Desserts":"Indore",
+  "Cranberries":"Indore","Trail Mixes":"Indore","Seed Mix":"Indore","Berry Mix":"Indore",
+  "Savoury Mixes":"Indore","Figs":"Indore","Pistachio":"Indore","Raisins":"Indore",
+  "Other Seeds":"Indore","Chia Seeds":"Indore","Walnut":"Indore",
+  "Roasted & Flavoured Makhana":"Purnia","Makhana Raw":"Purnia"
+};
+const MUNCHIES_REBELA_JS = ["makha shaka imli waves","makha shaka cheese waves"];
+const INSTAMART_CUSTOMERS_JS = new Set([
+  "PJTJ Technologies Private Limited","Cloudstore Retail Private Limited",
+  "Moksh Enterprises Private Limited","Jupiter Kart Private Limited",
+  "Cloudkart Ventures Private Limited"
+]);
+const CUSTOMER_RENAMES_JS = {
+  "FK-Grocery-VS48860":"FK-Grocery",
+  "FK-Hyperlocal-VS46867":"FK-Hyperlocal",
+  "FK-Alpha-VS46867":"FK-Alpha"
+};
+const REQUIRED_COLS = ["Stock Qty in KGS","Delivered Qty (Kgs)","Closed Kgs",
+                       "Pending Dispatch Kgs","NEW MIS ITEM GROUP"];
+const KEEP_COLS = ["NEW MIS ITEM GROUP","Parent Item","Sales Order Date",
+                   "Customer Group","Customer","Client Type","Branch","Item Name",
+                   "Stock Qty in KGS","Delivered Qty (Kgs)","Closed Kgs","Pending Dispatch Kgs"];
+
+function getOriginJS(row) {
+  const branch       = String(row['Branch'] || '').trim();
+  const itemGroup    = String(row['NEW MIS ITEM GROUP'] || '').trim();
+  const itemName     = String(row['Item Name'] || '').trim().toLowerCase();
+  const custGroup    = String(row['Customer Group'] || '').trim();
+  if (branch === 'Haryana') return 'CFA(Gurgaon)';
+  if (itemGroup === 'Cashew') {
+    const cust = String(row['Customer'] || '').trim();
+    if (custGroup === 'CPC KPKB' || cust.toUpperCase().startsWith('PAC')) return 'Indore';
+    return 'Udupi';
+  }
+  if (itemGroup === 'Munchies') {
+    if (MUNCHIES_REBELA_JS.some(k => itemName.includes(k))) return 'Rebela';
+    return 'UD Foods';
+  }
+  return ITEM_GROUP_ORIGIN_JS[itemGroup] || 'Indore';
+}
+
 // ── Upload / Drag & Drop ──────────────────────────────────────────────────────
 // The drop zone is a <label for="file-input"> so clicking it natively opens the
 // file picker without any JS. We only need JS for drag-and-drop and change events.
@@ -296,69 +340,75 @@ fileInput.addEventListener('change', e => {
   if (file) previewFile(file);
 });
 
-// Columns the server actually needs — everything else is stripped to shrink payload
-const NEEDED_COLS = [
-  'NEW MIS ITEM GROUP', 'Parent Item', 'Sales Order Date',
-  'Customer Group', 'Customer', 'Client Type',
-  'Branch', 'Item Name',
-  'Stock Qty in KGS', 'Delivered Qty (Kgs)', 'Closed Kgs', 'Pending Dispatch Kgs'
-];
-
 async function previewFile(file) {
   selectedFile = file;
   parsedCsvData = null;
+  allRows = [];
   const mb = (file.size / 1024 / 1024).toFixed(1);
   document.getElementById('selected-file-name').textContent = file.name + '  (' + mb + ' MB)';
-  setMsg('⏳ Reading Excel and compressing…');
-  // Show ready bar immediately so user sees progress
+  setMsg('⏳ Reading Excel…');
   dz.style.display = 'none';
   document.getElementById('file-ready-bar').style.display = 'block';
+  // Disable Generate button while processing
+  const btn = document.getElementById('generate-btn');
+  btn.disabled = true; btn.style.opacity = '0.55'; btn.innerHTML = '⏳ Processing…';
 
   try {
     const ab = await file.arrayBuffer();
     const wb = XLSX.read(ab, { type: 'array', cellDates: true, dateNF: 'yyyy-mm-dd' });
     const ws = wb.Sheets[wb.SheetNames[0]];
+    const rawRows = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd', defval: '' });
 
-    // Read all rows as formatted strings (dates come out as yyyy-mm-dd)
-    const allData = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd', defval: '' });
+    if (!rawRows.length) { setMsg('⚠ File appears empty', true); resetBtn(); return; }
 
-    if (allData.length > 0) {
-      const fileHeaders = Object.keys(allData[0]);
+    // Build a canonical→actual header map (case/space-insensitive)
+    const fileHeaders = Object.keys(rawRows[0]).map(h => h.trim());
+    const hMap = {};
+    KEEP_COLS.forEach(canon => {
+      hMap[canon] =
+        fileHeaders.find(h => h === canon) ||
+        fileHeaders.find(h => h.toLowerCase() === canon.toLowerCase()) ||
+        fileHeaders.find(h => h.toLowerCase().replace(/\\s+/g,'') === canon.toLowerCase().replace(/\\s+/g,'')) ||
+        null;
+    });
 
-      // Map each needed column → actual header in file (case/space-insensitive)
-      const headerMap = {};
-      NEEDED_COLS.forEach(need => {
-        const match =
-          fileHeaders.find(h => h.trim() === need) ||
-          fileHeaders.find(h => h.trim().toLowerCase() === need.toLowerCase()) ||
-          fileHeaders.find(h => h.trim().toLowerCase().replace(/\\s+/g,'') === need.toLowerCase().replace(/\\s+/g,''));
-        if (match) headerMap[need] = match;
-      });
-
-      // Build slim rows with canonical header names
-      const slimRows = allData.map(row => {
-        const r = {};
-        for (const [canonical, actual] of Object.entries(headerMap)) {
-          r[canonical] = row[actual] !== undefined ? row[actual] : '';
-        }
-        return r;
-      });
-
-      // Convert slim rows → CSV string
-      const slimWs = XLSX.utils.json_to_sheet(slimRows);
-      parsedCsvData = XLSX.utils.sheet_to_csv(slimWs);
-
-      const kb = Math.round(new Blob([parsedCsvData]).size / 1024);
-      setMsg('✓ ' + allData.length.toLocaleString() + ' rows · compressed to ' + kb + ' KB  (was ' + mb + ' MB)');
-    } else {
-      setMsg('⚠ Excel appears empty — check the file');
+    // Validate required columns
+    const missing = REQUIRED_COLS.filter(r => !hMap[r]);
+    if (missing.length) {
+      setMsg('❌ Missing columns: ' + missing.join(', ') +
+             '<br><small style="color:#9ca3af">Found: ' + fileHeaders.join(', ') + '</small>', true);
+      resetBtn(); return;
     }
+
+    const numCols = ['Stock Qty in KGS','Delivered Qty (Kgs)','Closed Kgs','Pending Dispatch Kgs'];
+
+    // Process every row entirely in the browser
+    allRows = rawRows
+      .map(raw => {
+        const r = {};
+        for (const canon of KEEP_COLS) {
+          r[canon] = hMap[canon] ? (raw[hMap[canon]] !== undefined ? raw[hMap[canon]] : '') : '';
+        }
+        // Numeric coerce
+        for (const c of numCols) r[c] = parseFloat(r[c]) || 0;
+        // Instamart override
+        const cust = String(r['Customer'] || '').trim();
+        if (INSTAMART_CUSTOMERS_JS.has(cust)) r['Customer Group'] = 'Instamart';
+        // Customer rename
+        r['Customer'] = CUSTOMER_RENAMES_JS[cust] || cust;
+        // Origin (full logic mirroring Python)
+        r['Origin'] = getOriginJS(r);
+        return r;
+      })
+      .filter(r => String(r['NEW MIS ITEM GROUP'] || '').trim() !== '');
+
+    setMsg('✓ ' + allRows.length.toLocaleString() + ' rows ready — click Generate Fill Rate');
+
   } catch (e) {
     console.error('SheetJS error:', e);
-    parsedCsvData = null;
-    setMsg('⚠ Could not pre-read Excel (' + e.message + '). Will try direct upload.');
+    allRows = [];
+    setMsg('❌ Could not read file: ' + e.message, true);
   }
-
   resetBtn();
 }
 
@@ -388,12 +438,23 @@ function resetBtn() {
 
 function triggerGenerate() {
   if (!selectedFile) return;
+
+  if (allRows.length > 0) {
+    // ✅ Data already processed in browser — show dashboard instantly, no upload
+    document.getElementById('file-badge').textContent =
+      selectedFile.name + ' · ' + allRows.length.toLocaleString() + ' rows';
+    document.getElementById('file-ready-bar').style.display = 'none';
+    document.getElementById('dashboard').classList.remove('hidden');
+    initFilters();
+    applyFilters();
+    return;
+  }
+
+  // Fallback: if SheetJS failed, upload file to server
   const btn = document.getElementById('generate-btn');
-  btn.disabled = true;
-  btn.style.background = '#1e40af';
-  btn.style.opacity = '0.8';
-  btn.style.cursor = 'not-allowed';
-  btn.innerHTML = '&#9203;&nbsp; Processing&hellip;';
+  btn.disabled = true; btn.style.background = '#1e40af';
+  btn.style.opacity = '0.8'; btn.style.cursor = 'not-allowed';
+  btn.innerHTML = '&#9203;&nbsp; Uploading…';
   uploadFile(selectedFile).finally(resetBtn);
 }
 
