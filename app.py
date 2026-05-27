@@ -247,28 +247,52 @@ dz.addEventListener('drop', e => {
   if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
 });
 
-function setMsg(txt, err = false) {
+function setMsg(html, err = false) {
   const el = document.getElementById('upload-msg');
-  el.textContent = txt;
+  el.innerHTML = html;
   el.className = 'mt-3 text-sm ' + (err ? 'text-red-500' : 'text-gray-400');
 }
 
 async function uploadFile(file) {
-  setMsg('Uploading ' + file.name + '…');
+  const mb = (file.size / 1024 / 1024).toFixed(1);
+  setMsg('Uploading ' + file.name + ' (' + mb + ' MB)…');
+
   const fd = new FormData();
   fd.append('file', file);
   try {
     const res = await fetch('/api/upload', { method: 'POST', body: fd });
+
+    // Guard: server may return HTML (413 / 500) instead of JSON
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      const text = await res.text();
+      if (res.status === 413)
+        setMsg('❌ File too large (' + mb + ' MB). Vercel limit is 4.5 MB — try a smaller date range.', true);
+      else
+        setMsg('❌ Server error HTTP ' + res.status + ': ' + text.slice(0, 150), true);
+      return;
+    }
+
     const data = await res.json();
-    if (!res.ok) { setMsg(data.error || 'Upload failed', true); return; }
+    if (!res.ok) {
+      // Format column errors with line breaks
+      const msg = (data.error || 'Upload failed').replace(/\n/g, '<br>');
+      const extra = data.columns_in_file
+        ? '<br><span style="font-size:11px;color:#6b7280">Columns found in file: ' +
+          data.columns_in_file.join(', ') + '</span>'
+        : '';
+      setMsg('❌ ' + msg + extra, true);
+      return;
+    }
+
     allRows = data.rows;
     document.getElementById('file-badge').textContent = file.name + ' · ' + allRows.length.toLocaleString() + ' rows';
     initFilters();
     applyFilters();
     document.getElementById('dashboard').classList.remove('hidden');
-    setMsg('✓ Loaded ' + allRows.length.toLocaleString() + ' rows');
+    setMsg('✓ Loaded ' + allRows.length.toLocaleString() + ' rows from ' + file.name);
   } catch (err) {
-    setMsg('Error: ' + err.message, true);
+    setMsg('❌ ' + err.message, true);
   }
 }
 
@@ -701,54 +725,89 @@ def index():
 
 @app.route("/api/upload", methods=["POST"])
 def upload():
-    if "file" not in request.files:
-        return jsonify({"error": "No file provided"}), 400
-
-    file = request.files["file"]
+    import json as _json
     try:
-        df = pd.read_excel(file)
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+
+        file = request.files["file"]
+        try:
+            df = pd.read_excel(file)
+        except Exception as e:
+            return jsonify({"error": f"Could not read Excel file: {e}"}), 400
+
+        # ── Normalise column names (strip leading/trailing whitespace) ──────────
+        df.columns = [str(c).strip() for c in df.columns]
+        available = list(df.columns)
+
+        # ── Smart column validation ─────────────────────────────────────────────
+        required = ["Stock Qty in KGS", "Delivered Qty (Kgs)", "Closed Kgs",
+                    "Pending Dispatch Kgs", "NEW MIS ITEM GROUP"]
+        problems = []
+        for req in required:
+            if req in df.columns:
+                continue
+            # Case-insensitive exact match
+            ci = next((c for c in available if c.lower() == req.lower()), None)
+            if ci:
+                problems.append(f"'{req}' → file has '{ci}' (case mismatch)")
+                continue
+            # Whitespace-stripped case-insensitive match
+            ws = next((c for c in available
+                       if c.lower().replace(" ", "") == req.lower().replace(" ", "")), None)
+            if ws:
+                problems.append(f"'{req}' → file has '{ws}' (spacing/case mismatch)")
+                continue
+            # Partial match (contains key word)
+            part = next((c for c in available
+                         if req.lower().split()[0] in c.lower()), None)
+            hint = f" — closest: '{part}'" if part else ""
+            problems.append(f"'{req}' — NOT FOUND in file{hint}")
+
+        if problems:
+            return jsonify({
+                "error": "Column issues detected:\n• " + "\n• ".join(problems),
+                "columns_in_file": available
+            }), 400
+
+        # ── Processing ──────────────────────────────────────────────────────────
+        num_cols = ["Stock Qty in KGS", "Delivered Qty (Kgs)", "Closed Kgs",
+                    "Pending Dispatch Kgs"]
+        for c in num_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+        if "Sales Order Date" in df.columns:
+            df["Sales Order Date"] = (
+                pd.to_datetime(df["Sales Order Date"], errors="coerce")
+                .dt.strftime("%Y-%m-%d")
+            )
+
+        df["Origin"] = df.apply(get_origin, axis=1)
+
+        # Override Customer Group for Instamart customers
+        if "Customer" in df.columns:
+            df["Customer Group"] = df.apply(
+                lambda r: "Instamart"
+                if str(r.get("Customer") or "").strip() in INSTAMART_CUSTOMERS
+                else r.get("Customer Group"),
+                axis=1,
+            )
+            # Rename specific customer names
+            df["Customer"] = df["Customer"].apply(
+                lambda v: CUSTOMER_RENAMES.get(str(v).strip(), v) if pd.notna(v) else v
+            )
+
+        keep = ["NEW MIS ITEM GROUP", "Parent Item", "Sales Order Date",
+                "Customer Group", "Customer", "Client Type", "Origin"] + num_cols
+        keep = [c for c in keep if c in df.columns]
+
+        rows = _json.loads(df[keep].to_json(orient="records"))
+        return jsonify({"rows": rows})
+
     except Exception as e:
-        return jsonify({"error": f"Could not read file: {e}"}), 400
-
-    required = ["Stock Qty in KGS", "Delivered Qty (Kgs)", "Closed Kgs",
-                "Pending Dispatch Kgs", "NEW MIS ITEM GROUP"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        return jsonify({"error": f"Missing columns: {', '.join(missing)}"}), 400
-
-    num_cols = ["Stock Qty in KGS", "Delivered Qty (Kgs)", "Closed Kgs", "Pending Dispatch Kgs"]
-    for c in num_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    if "Sales Order Date" in df.columns:
-        df["Sales Order Date"] = (
-            pd.to_datetime(df["Sales Order Date"], errors="coerce")
-            .dt.strftime("%Y-%m-%d")
-        )
-
-    df["Origin"] = df.apply(get_origin, axis=1)
-
-    # Override Customer Group for Instamart customers
-    if "Customer" in df.columns:
-        df["Customer Group"] = df.apply(
-            lambda r: "Instamart"
-            if str(r.get("Customer") or "").strip() in INSTAMART_CUSTOMERS
-            else r.get("Customer Group"),
-            axis=1,
-        )
-        # Rename specific customer names
-        df["Customer"] = df["Customer"].apply(
-            lambda v: CUSTOMER_RENAMES.get(str(v).strip(), v) if pd.notna(v) else v
-        )
-
-    keep = ["NEW MIS ITEM GROUP", "Parent Item", "Sales Order Date", "Customer Group",
-            "Customer", "Client Type", "Origin"] + num_cols
-    keep = [c for c in keep if c in df.columns]
-
-    # Use pandas JSON serialiser so NaN → null (valid JSON); then parse back to list
-    import json
-    rows = json.loads(df[keep].to_json(orient="records"))
-    return jsonify({"rows": rows})
+        import traceback
+        return jsonify({"error": f"Processing error: {str(e)}",
+                        "detail": traceback.format_exc()[-500:]}), 500
 
 
 @app.route("/api/download", methods=["POST"])
