@@ -363,7 +363,7 @@ async function uploadFile(file) {
     const data = await res.json();
     if (!res.ok) {
       // Format column errors with line breaks
-      const msg = (data.error || 'Upload failed').replace(/\n/g, '<br>');
+      const msg = (data.error || 'Upload failed').replace(/\\n/g, '<br>');
       const extra = data.columns_in_file
         ? '<br><span style="font-size:11px;color:#6b7280">Columns found in file: ' +
           data.columns_in_file.join(', ') + '</span>'
