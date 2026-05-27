@@ -287,12 +287,14 @@ async function uploadFile(file) {
 
     allRows = data.rows;
     document.getElementById('file-badge').textContent = file.name + ' · ' + allRows.length.toLocaleString() + ' rows';
+    // Unhide dashboard FIRST so canvases have dimensions before Chart.js renders
+    document.getElementById('dashboard').classList.remove('hidden');
     initFilters();
     applyFilters();
-    document.getElementById('dashboard').classList.remove('hidden');
     setMsg('✓ Loaded ' + allRows.length.toLocaleString() + ' rows from ' + file.name);
   } catch (err) {
     setMsg('❌ ' + err.message, true);
+    console.error('Upload error:', err);
   }
 }
 
@@ -342,7 +344,7 @@ function applyFilters() {
   const rows = filteredRows();
   renderKPIs(rows);
   renderTable(currentTab, rows);
-  renderCharts(currentTab, rows);
+  try { renderCharts(currentTab, rows); } catch(e) { console.error('Chart render error:', e); }
 }
 
 // ── KPI Cards ─────────────────────────────────────────────────────────────────
