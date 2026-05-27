@@ -96,31 +96,40 @@ HTML = """<!DOCTYPE html>
 
 <div class="max-w-screen-xl mx-auto px-4 py-3 space-y-3">
 
-  <!-- Upload drop zone (hidden once file selected) -->
-  <div class="drop-zone bg-white rounded-2xl p-10 text-center cursor-pointer select-none" id="drop-zone">
-    <div class="text-4xl mb-2">&#128193;</div>
-    <p class="text-gray-500 text-sm">Click to upload or drag &amp; drop your Fill Rate Excel file</p>
-    <p class="text-gray-400 text-xs mt-1">.xlsx / .xls</p>
-    <input type="file" id="file-input" accept=".xlsx,.xls" class="hidden">
-  </div>
+  <!-- Hidden file input (OUTSIDE any clickable container to avoid click-loop bugs) -->
+  <input type="file" id="file-input" accept=".xlsx,.xls"
+         style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;">
 
-  <!-- File-ready bar (shown after file selected, hidden again after success) -->
-  <div id="file-ready-bar" style="display:none;"
-       class="bg-white rounded-2xl px-5 py-4 shadow-sm border border-blue-100">
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-      <span style="font-size:22px;">&#128196;</span>
+  <!-- Drop zone: a <label> natively opens the file picker on click — no JS needed -->
+  <label for="file-input" id="drop-zone"
+         style="display:block;background:#fff;border:2px dashed #cbd5e1;border-radius:16px;
+                padding:48px 24px;text-align:center;cursor:pointer;transition:all .2s;user-select:none;">
+    <div style="font-size:40px;margin-bottom:10px;">&#128193;</div>
+    <p style="color:#6b7280;font-size:14px;margin:0;">Click to upload or drag &amp; drop your Fill Rate Excel file</p>
+    <p style="color:#9ca3af;font-size:12px;margin:6px 0 0 0;">.xlsx / .xls</p>
+  </label>
+
+  <!-- File-ready bar — shown after a file is chosen -->
+  <div id="file-ready-bar" style="display:none;background:#fff;border:1px solid #bfdbfe;
+       border-radius:16px;padding:16px 20px;box-shadow:0 1px 4px rgba(0,0,0,.06);">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+      <span style="font-size:26px;">&#128196;</span>
       <div style="flex:1;min-width:0;">
-        <p id="selected-file-name" style="font-size:13px;font-weight:600;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></p>
-        <p id="upload-msg" style="font-size:12px;margin-top:2px;color:#6b7280;"></p>
+        <p id="selected-file-name"
+           style="margin:0;font-size:14px;font-weight:700;color:#1e293b;
+                  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></p>
+        <p id="upload-msg" style="margin:4px 0 0 0;font-size:12px;color:#6b7280;"></p>
       </div>
       <button onclick="resetFileSelection()"
-        style="font-size:12px;color:#3b82f6;text-decoration:underline;background:none;border:none;cursor:pointer;white-space:nowrap;">
+        style="font-size:12px;color:#3b82f6;text-decoration:underline;background:none;
+               border:none;cursor:pointer;white-space:nowrap;padding:4px 8px;">
         &#x21BA; Change file
       </button>
       <button id="generate-btn" onclick="triggerGenerate()"
-        style="padding:10px 28px;background:#2563eb;color:#fff;font-size:13px;font-weight:700;border:none;border-radius:12px;cursor:pointer;display:flex;align-items:center;gap:8px;box-shadow:0 2px 8px rgba(37,99,235,0.3);transition:background .15s;white-space:nowrap;"
-        onmouseover="this.style.background='#1d4ed8'" onmouseout="this.style.background='#2563eb'">
-        <span style="font-size:14px;">&#9654;</span> Generate Fill Rate
+        style="padding:11px 32px;background:#2563eb;color:#fff;font-size:14px;font-weight:700;
+               border:none;border-radius:12px;cursor:pointer;display:inline-flex;align-items:center;
+               gap:8px;box-shadow:0 3px 10px rgba(37,99,235,.35);white-space:nowrap;letter-spacing:.01em;">
+        &#9654;&nbsp; Generate Fill Rate
       </button>
     </div>
   </div>
@@ -256,42 +265,52 @@ const TABS = {
 };
 
 // ── Upload / Drag & Drop ──────────────────────────────────────────────────────
+// The drop zone is a <label for="file-input"> so clicking it natively opens the
+// file picker without any JS. We only need JS for drag-and-drop and change events.
 const dz = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
 
-// Clicking anywhere on the drop zone opens the file picker
-dz.addEventListener('click', () => document.getElementById('file-input').click());
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
-dz.addEventListener('drop', e => {
-  e.preventDefault(); dz.classList.remove('drag-over');
-  if (e.dataTransfer.files[0]) previewFile(e.dataTransfer.files[0]);
+// Drag & drop on the label/drop zone
+dz.addEventListener('dragover', e => {
+  e.preventDefault();
+  dz.style.borderColor = '#2563eb';
+  dz.style.background  = '#eff6ff';
 });
-document.getElementById('file-input').addEventListener('change', e => {
-  if (e.target.files[0]) previewFile(e.target.files[0]);
+dz.addEventListener('dragleave', () => {
+  dz.style.borderColor = '#cbd5e1';
+  dz.style.background  = '#fff';
+});
+dz.addEventListener('drop', e => {
+  e.preventDefault();
+  dz.style.borderColor = '#cbd5e1';
+  dz.style.background  = '#fff';
+  const file = e.dataTransfer.files[0];
+  if (file) previewFile(file);
+});
+
+// File chosen via native dialog
+fileInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) previewFile(file);
 });
 
 function previewFile(file) {
-  if (!file) return;
   selectedFile = file;
   const mb = (file.size / 1024 / 1024).toFixed(1);
-  // Show file name in the ready bar
   document.getElementById('selected-file-name').textContent = file.name + '   (' + mb + ' MB)';
   setMsg('');
-  // Swap: hide drop zone, show ready bar
+  // Hide drop zone, show ready bar
   dz.style.display = 'none';
   document.getElementById('file-ready-bar').style.display = 'block';
-  // Reset button state
-  const btn = document.getElementById('generate-btn');
-  btn.disabled = false;
-  btn.innerHTML = '<span style="font-size:14px;">&#9654;</span> Generate Fill Rate';
-  btn.style.background = '#2563eb';
+  // Ensure button is in default state
+  resetBtn();
 }
 
 function resetFileSelection() {
   selectedFile = null;
-  document.getElementById('file-input').value = '';
+  fileInput.value = '';
   document.getElementById('file-ready-bar').style.display = 'none';
-  dz.style.display = '';
+  dz.style.display = 'block';
   setMsg('');
 }
 
@@ -301,17 +320,24 @@ function setMsg(html, err = false) {
   el.style.color = err ? '#ef4444' : '#6b7280';
 }
 
+function resetBtn() {
+  const btn = document.getElementById('generate-btn');
+  btn.disabled = false;
+  btn.style.background = '#2563eb';
+  btn.style.opacity = '1';
+  btn.style.cursor = 'pointer';
+  btn.innerHTML = '&#9654;&nbsp; Generate Fill Rate';
+}
+
 function triggerGenerate() {
   if (!selectedFile) return;
   const btn = document.getElementById('generate-btn');
   btn.disabled = true;
   btn.style.background = '#1e40af';
-  btn.innerHTML = '&#8987; Processing&hellip;';
-  uploadFile(selectedFile).finally(() => {
-    btn.disabled = false;
-    btn.style.background = '#2563eb';
-    btn.innerHTML = '<span style="font-size:14px;">&#9654;</span> Generate Fill Rate';
-  });
+  btn.style.opacity = '0.8';
+  btn.style.cursor = 'not-allowed';
+  btn.innerHTML = '&#9203;&nbsp; Processing&hellip;';
+  uploadFile(selectedFile).finally(resetBtn);
 }
 
 async function uploadFile(file) {
