@@ -96,24 +96,33 @@ HTML = """<!DOCTYPE html>
 
 <div class="max-w-screen-xl mx-auto px-4 py-3 space-y-3">
 
-  <!-- Upload -->
-  <div class="drop-zone bg-white rounded-2xl p-10 text-center cursor-pointer select-none" id="drop-zone"
-       onclick="document.getElementById('file-input').click()">
+  <!-- Upload drop zone (hidden once file selected) -->
+  <div class="drop-zone bg-white rounded-2xl p-10 text-center cursor-pointer select-none" id="drop-zone">
     <div class="text-4xl mb-2">&#128193;</div>
     <p class="text-gray-500 text-sm">Click to upload or drag &amp; drop your Fill Rate Excel file</p>
     <p class="text-gray-400 text-xs mt-1">.xlsx / .xls</p>
     <input type="file" id="file-input" accept=".xlsx,.xls" class="hidden">
-    <!-- Selected file name preview -->
-    <p id="selected-file-name" class="mt-3 text-sm font-medium text-blue-600 hidden"></p>
-    <p id="upload-msg" class="mt-2 text-sm text-gray-400"></p>
   </div>
 
-  <!-- Generate button (shown after file selected) -->
-  <div id="generate-btn-wrap" class="hidden flex justify-center">
-    <button id="generate-btn" onclick="triggerGenerate()"
-      class="mt-1 px-8 py-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-sm font-semibold rounded-xl shadow-md transition-all flex items-center gap-2">
-      <span class="text-base">&#9654;</span> Generate Fill Rate
-    </button>
+  <!-- File-ready bar (shown after file selected, hidden again after success) -->
+  <div id="file-ready-bar" style="display:none;"
+       class="bg-white rounded-2xl px-5 py-4 shadow-sm border border-blue-100">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <span style="font-size:22px;">&#128196;</span>
+      <div style="flex:1;min-width:0;">
+        <p id="selected-file-name" style="font-size:13px;font-weight:600;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></p>
+        <p id="upload-msg" style="font-size:12px;margin-top:2px;color:#6b7280;"></p>
+      </div>
+      <button onclick="resetFileSelection()"
+        style="font-size:12px;color:#3b82f6;text-decoration:underline;background:none;border:none;cursor:pointer;white-space:nowrap;">
+        &#x21BA; Change file
+      </button>
+      <button id="generate-btn" onclick="triggerGenerate()"
+        style="padding:10px 28px;background:#2563eb;color:#fff;font-size:13px;font-weight:700;border:none;border-radius:12px;cursor:pointer;display:flex;align-items:center;gap:8px;box-shadow:0 2px 8px rgba(37,99,235,0.3);transition:background .15s;white-space:nowrap;"
+        onmouseover="this.style.background='#1d4ed8'" onmouseout="this.style.background='#2563eb'">
+        <span style="font-size:14px;">&#9654;</span> Generate Fill Rate
+      </button>
+    </div>
   </div>
 
   <!-- Dashboard (hidden until data loaded) -->
@@ -249,42 +258,60 @@ const TABS = {
 // ── Upload / Drag & Drop ──────────────────────────────────────────────────────
 const dz = document.getElementById('drop-zone');
 
-function previewFile(file) {
-  if (!file) return;
-  selectedFile = file;
-  const mb = (file.size / 1024 / 1024).toFixed(1);
-  const nameEl = document.getElementById('selected-file-name');
-  nameEl.textContent = '📄 ' + file.name + ' (' + mb + ' MB) — ready';
-  nameEl.classList.remove('hidden');
-  document.getElementById('upload-msg').textContent = '';
-  document.getElementById('generate-btn-wrap').classList.remove('hidden');
-}
-
-document.getElementById('file-input').addEventListener('change', e => {
-  if (e.target.files[0]) previewFile(e.target.files[0]);
-});
+// Clicking anywhere on the drop zone opens the file picker
+dz.addEventListener('click', () => document.getElementById('file-input').click());
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
 dz.addEventListener('drop', e => {
   e.preventDefault(); dz.classList.remove('drag-over');
   if (e.dataTransfer.files[0]) previewFile(e.dataTransfer.files[0]);
 });
+document.getElementById('file-input').addEventListener('change', e => {
+  if (e.target.files[0]) previewFile(e.target.files[0]);
+});
 
-function triggerGenerate() {
-  if (!selectedFile) return;
+function previewFile(file) {
+  if (!file) return;
+  selectedFile = file;
+  const mb = (file.size / 1024 / 1024).toFixed(1);
+  // Show file name in the ready bar
+  document.getElementById('selected-file-name').textContent = file.name + '   (' + mb + ' MB)';
+  setMsg('');
+  // Swap: hide drop zone, show ready bar
+  dz.style.display = 'none';
+  document.getElementById('file-ready-bar').style.display = 'block';
+  // Reset button state
   const btn = document.getElementById('generate-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="animate-spin inline-block">&#9696;</span> Processing…';
-  uploadFile(selectedFile).finally(() => {
-    btn.disabled = false;
-    btn.innerHTML = '<span class="text-base">&#9654;</span> Generate Fill Rate';
-  });
+  btn.disabled = false;
+  btn.innerHTML = '<span style="font-size:14px;">&#9654;</span> Generate Fill Rate';
+  btn.style.background = '#2563eb';
+}
+
+function resetFileSelection() {
+  selectedFile = null;
+  document.getElementById('file-input').value = '';
+  document.getElementById('file-ready-bar').style.display = 'none';
+  dz.style.display = '';
+  setMsg('');
 }
 
 function setMsg(html, err = false) {
   const el = document.getElementById('upload-msg');
   el.innerHTML = html;
-  el.className = 'mt-3 text-sm ' + (err ? 'text-red-500' : 'text-gray-400');
+  el.style.color = err ? '#ef4444' : '#6b7280';
+}
+
+function triggerGenerate() {
+  if (!selectedFile) return;
+  const btn = document.getElementById('generate-btn');
+  btn.disabled = true;
+  btn.style.background = '#1e40af';
+  btn.innerHTML = '&#8987; Processing&hellip;';
+  uploadFile(selectedFile).finally(() => {
+    btn.disabled = false;
+    btn.style.background = '#2563eb';
+    btn.innerHTML = '<span style="font-size:14px;">&#9654;</span> Generate Fill Rate';
+  });
 }
 
 async function uploadFile(file) {
@@ -321,7 +348,8 @@ async function uploadFile(file) {
 
     allRows = data.rows;
     document.getElementById('file-badge').textContent = file.name + ' · ' + allRows.length.toLocaleString() + ' rows';
-    // Unhide dashboard FIRST so canvases have dimensions before Chart.js renders
+    // Hide the ready bar, show dashboard FIRST so canvases have dimensions before Chart.js renders
+    document.getElementById('file-ready-bar').style.display = 'none';
     document.getElementById('dashboard').classList.remove('hidden');
     initFilters();
     applyFilters();
