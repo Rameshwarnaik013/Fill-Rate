@@ -103,7 +103,17 @@ HTML = """<!DOCTYPE html>
     <p class="text-gray-500 text-sm">Click to upload or drag &amp; drop your Fill Rate Excel file</p>
     <p class="text-gray-400 text-xs mt-1">.xlsx / .xls</p>
     <input type="file" id="file-input" accept=".xlsx,.xls" class="hidden">
-    <p id="upload-msg" class="mt-3 text-sm text-gray-400"></p>
+    <!-- Selected file name preview -->
+    <p id="selected-file-name" class="mt-3 text-sm font-medium text-blue-600 hidden"></p>
+    <p id="upload-msg" class="mt-2 text-sm text-gray-400"></p>
+  </div>
+
+  <!-- Generate button (shown after file selected) -->
+  <div id="generate-btn-wrap" class="hidden flex justify-center">
+    <button id="generate-btn" onclick="triggerGenerate()"
+      class="mt-1 px-8 py-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-sm font-semibold rounded-xl shadow-md transition-all flex items-center gap-2">
+      <span class="text-base">&#9654;</span> Generate Fill Rate
+    </button>
   </div>
 
   <!-- Dashboard (hidden until data loaded) -->
@@ -221,6 +231,7 @@ HTML = """<!DOCTYPE html>
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
 let allRows = [];
+let selectedFile = null;
 let currentTab = 'item-group';
 let expandedGroups      = new Set();  // Item Group → Parent Item
 let expandedCGRows      = new Set();  // Customer Group → Customer
@@ -237,15 +248,38 @@ const TABS = {
 
 // ── Upload / Drag & Drop ──────────────────────────────────────────────────────
 const dz = document.getElementById('drop-zone');
+
+function previewFile(file) {
+  if (!file) return;
+  selectedFile = file;
+  const mb = (file.size / 1024 / 1024).toFixed(1);
+  const nameEl = document.getElementById('selected-file-name');
+  nameEl.textContent = '📄 ' + file.name + ' (' + mb + ' MB) — ready';
+  nameEl.classList.remove('hidden');
+  document.getElementById('upload-msg').textContent = '';
+  document.getElementById('generate-btn-wrap').classList.remove('hidden');
+}
+
 document.getElementById('file-input').addEventListener('change', e => {
-  if (e.target.files[0]) uploadFile(e.target.files[0]);
+  if (e.target.files[0]) previewFile(e.target.files[0]);
 });
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
 dz.addEventListener('drop', e => {
   e.preventDefault(); dz.classList.remove('drag-over');
-  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files[0]) previewFile(e.dataTransfer.files[0]);
 });
+
+function triggerGenerate() {
+  if (!selectedFile) return;
+  const btn = document.getElementById('generate-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="animate-spin inline-block">&#9696;</span> Processing…';
+  uploadFile(selectedFile).finally(() => {
+    btn.disabled = false;
+    btn.innerHTML = '<span class="text-base">&#9654;</span> Generate Fill Rate';
+  });
+}
 
 function setMsg(html, err = false) {
   const el = document.getElementById('upload-msg');
