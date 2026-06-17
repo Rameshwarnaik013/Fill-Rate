@@ -37,14 +37,10 @@ def get_origin(row):
     branch = str(row.get("Branch") or "").strip()
     item_group = str(row.get("NEW MIS ITEM GROUP") or "").strip()
     item_name = str(row.get("Item Name") or "").strip().lower()
-    customer_group = str(row.get("Customer Group") or "").strip()
+    if item_group == "Cashew":
+        return "Indore"
     if branch == "Haryana":
         return "CFA(Gurgaon)"
-    if item_group == "Cashew":
-        customer = str(row.get("Customer") or "").strip()
-        if customer_group == "CPC KPKB" or customer.upper().startswith("PAC"):
-            return "Indore"
-        return "Udupi"
     if item_group == "Munchies":
         if any(k in item_name for k in MUNCHIES_REBELA):
             return "Rebela"
@@ -296,13 +292,10 @@ function getOriginJS(row) {
   const branch       = String(row['Branch'] || '').trim();
   const itemGroup    = String(row['NEW MIS ITEM GROUP'] || '').trim();
   const itemName     = String(row['Item Name'] || '').trim().toLowerCase();
-  const custGroup    = String(row['Customer Group'] || '').trim();
-  if (branch === 'Haryana') return 'CFA(Gurgaon)';
   if (itemGroup === 'Cashew') {
-    const cust = String(row['Customer'] || '').trim();
-    if (custGroup === 'CPC KPKB' || cust.toUpperCase().startsWith('PAC')) return 'Indore';
-    return 'Udupi';
+    return 'Indore';
   }
+  if (branch === 'Haryana') return 'CFA(Gurgaon)';
   if (itemGroup === 'Munchies') {
     if (MUNCHIES_REBELA_JS.some(k => itemName.includes(k))) return 'Rebela';
     return 'UD Foods';
