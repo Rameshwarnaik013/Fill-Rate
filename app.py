@@ -5,19 +5,6 @@ from io import BytesIO
 
 app = Flask(__name__)
 
-# ── Origin lookup ──────────────────────────────────────────────────────────────
-ITEM_GROUP_ORIGIN = {
-    "Almonds": "Indore", "Roasted Almonds": "Indore", "Apricots": "Indore",
-    "Roasted & Flavoured Cashew": "Indore", "Dates": "Indore",
-    "Healthy Desserts": "Indore", "Cranberries": "Indore",
-    "Trail Mixes": "Indore", "Seed Mix": "Indore", "Berry Mix": "Indore",
-    "Savoury Mixes": "Indore", "Figs": "Indore", "Pistachio": "Indore",
-    "Raisins": "Indore", "Other Seeds": "Indore", "Chia Seeds": "Indore",
-    "Walnut": "Indore", "Roasted & Flavoured Makhana": "Purnia",
-    "Makhana Raw": "Purnia",
-}
-MUNCHIES_REBELA = ["makha shaka imli waves", "makha shaka cheese waves"]
-
 INSTAMART_CUSTOMERS = {
     "PJTJ Technologies Private Limited",
     "Cloudstore Retail Private Limited",
@@ -31,21 +18,6 @@ CUSTOMER_RENAMES = {
     "FK-Hyperlocal-VS46867": "FK-Hyperlocal",
     "FK-Alpha-VS46867":     "FK-Alpha",
 }
-
-
-def get_origin(row):
-    branch = str(row.get("Branch") or "").strip()
-    item_group = str(row.get("NEW MIS ITEM GROUP") or "").strip()
-    item_name = str(row.get("Item Name") or "").strip().lower()
-    if item_group == "Cashew":
-        return "Indore"
-    if branch == "Haryana":
-        return "CFA(Gurgaon)"
-    if item_group == "Munchies":
-        if any(k in item_name for k in MUNCHIES_REBELA):
-            return "Rebela"
-        return "UD Foods"
-    return ITEM_GROUP_ORIGIN.get(item_group, "Indore")
 
 
 # ── HTML (single-page app) ─────────────────────────────────────────────────────
@@ -263,15 +235,6 @@ const TABS = {
 };
 
 // ── Data-processing constants (mirrors Python server logic exactly) ────────────
-const ITEM_GROUP_ORIGIN_JS = {
-  "Almonds":"Indore","Roasted Almonds":"Indore","Apricots":"Indore",
-  "Roasted & Flavoured Cashew":"Indore","Dates":"Indore","Healthy Desserts":"Indore",
-  "Cranberries":"Indore","Trail Mixes":"Indore","Seed Mix":"Indore","Berry Mix":"Indore",
-  "Savoury Mixes":"Indore","Figs":"Indore","Pistachio":"Indore","Raisins":"Indore",
-  "Other Seeds":"Indore","Chia Seeds":"Indore","Walnut":"Indore",
-  "Roasted & Flavoured Makhana":"Purnia","Makhana Raw":"Purnia"
-};
-const MUNCHIES_REBELA_JS = ["makha shaka imli waves","makha shaka cheese waves"];
 const INSTAMART_CUSTOMERS_JS = new Set([
   "PJTJ Technologies Private Limited","Cloudstore Retail Private Limited",
   "Moksh Enterprises Private Limited","Jupiter Kart Private Limited",
@@ -285,23 +248,8 @@ const CUSTOMER_RENAMES_JS = {
 const REQUIRED_COLS = ["Stock Qty in KGS","Delivered Qty (Kgs)","Closed Kgs",
                        "Pending Dispatch Kgs","NEW MIS ITEM GROUP"];
 const KEEP_COLS = ["NEW MIS ITEM GROUP","Parent Item","Sales Order Date",
-                   "Customer Group","Customer","Client Type","Branch","Item Name",
+                   "Customer Group","Customer","Client Type","Origin",
                    "Stock Qty in KGS","Delivered Qty (Kgs)","Closed Kgs","Pending Dispatch Kgs"];
-
-function getOriginJS(row) {
-  const branch       = String(row['Branch'] || '').trim();
-  const itemGroup    = String(row['NEW MIS ITEM GROUP'] || '').trim();
-  const itemName     = String(row['Item Name'] || '').trim().toLowerCase();
-  if (itemGroup === 'Cashew') {
-    return 'Indore';
-  }
-  if (branch === 'Haryana') return 'CFA(Gurgaon)';
-  if (itemGroup === 'Munchies') {
-    if (MUNCHIES_REBELA_JS.some(k => itemName.includes(k))) return 'Rebela';
-    return 'UD Foods';
-  }
-  return ITEM_GROUP_ORIGIN_JS[itemGroup] || 'Indore';
-}
 
 // ── Upload / Drag & Drop ──────────────────────────────────────────────────────
 // The drop zone is a <label for="file-input"> so clicking it natively opens the
@@ -389,8 +337,8 @@ async function previewFile(file) {
         if (INSTAMART_CUSTOMERS_JS.has(cust)) r['Customer Group'] = 'Instamart';
         // Customer rename
         r['Customer'] = CUSTOMER_RENAMES_JS[cust] || cust;
-        // Origin (full logic mirroring Python)
-        r['Origin'] = getOriginJS(r);
+        // Origin taken directly from the file's "Origin" column
+        r['Origin'] = String(r['Origin'] || '').trim();
         return r;
       })
       .filter(r => String(r['NEW MIS ITEM GROUP'] || '').trim() !== '');
@@ -569,7 +517,7 @@ function renderKPIs(rows) {
     { label: 'Total Delivered (KGS)',    val: fmtN(td), bg: '#ECFDF5', fg: '#065f46', lb: '#064e3b' },
     { label: 'Closed KGS',              val: fmtN(tc), bg: '#FFF7ED', fg: '#9a3412', lb: '#7c2d12' },
     { label: 'Pending Dispatch KGS',    val: fmtN(tp), bg: '#FAF5FF', fg: '#7e22ce', lb: '#6b21a8' },
-    { label: 'Fill Rate',               val: pct(fr),  bg: fillClr(fr),   fg: '#000', lb: '#1f2937' },
+    { label: 'Fill Rate',               val: pct(fr),  bg: fillClrAbs(fr), fg: '#000', lb: '#1f2937' },
     { label: 'Closed %',                val: pct(cp),  bg: closedClr(cp), fg: '#000', lb: '#1f2937' },
     { label: 'Pen Dis %',               val: pct(pp),  bg: penClr(pp),    fg: '#000', lb: '#1f2937' },
   ];
@@ -734,7 +682,9 @@ function renderTable(tab, rows) {
   let html = '';
 
   if (tab === 'customer') {
-    for (const r of aggregateCustomersTab(rows)) {
+    const custData = aggregateCustomersTab(rows);
+    setFillScale(custData);
+    for (const r of custData) {
       if (r.isTotal) { html += regularRow(r); continue; }
       if (r.isParent) {
         const exp = expandedCustomers.has(r.label);
@@ -746,6 +696,7 @@ function renderTable(tab, rows) {
     }
   } else {
     const data = aggregate(rows, TABS[tab].key);
+    setFillScale(data);
     for (const r of data) {
       if (tab === 'item-group' && !r.isTotal) {
         const exp = expandedGroups.has(r.label);
@@ -858,9 +809,31 @@ const fmtN   = n => n.toLocaleString('en-IN', { maximumFractionDigits: 0 });
 const pct    = v => Math.round(v * 100) + '%';
 const esc    = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-function fillClr(v)   { return v >= 0.90 ? '#70AD47' : v >= 0.70 ? '#FFD966' : '#FF6B6B'; }
-function closedClr(v) { return v <= 0.05 ? '#70AD47' : v <= 0.10 ? '#FFD966' : '#FF6B6B'; }
-function penClr(v)    { return v <= 0.05 ? '#70AD47' : v <= 0.15 ? '#FFD966' : '#FF6B6B'; }
+// Absolute thresholds — used for the single overall KPI card
+function fillClrAbs(v) { return v >= 0.90 ? '#70AD47' : v >= 0.70 ? '#FFD966' : '#FF6B6B'; }
+function closedClr(v)  { return v <= 0.05 ? '#70AD47' : v <= 0.10 ? '#FFD966' : '#FF6B6B'; }
+function penClr(v)     { return v <= 0.05 ? '#70AD47' : v <= 0.15 ? '#FFD966' : '#FF6B6B'; }
+
+// Row-wise relative scale: highest fill rate in view → greenest, lowest → reddest
+let _frScale = { min: 0, max: 1 };
+function setFillScale(list) {
+  const vals = list.filter(r => !r.isTotal).map(r => r.fillRate);
+  _frScale = vals.length
+    ? { min: Math.min(...vals), max: Math.max(...vals) }
+    : { min: 0, max: 1 };
+}
+function _hexBlend(a, b, t) {
+  const pa = [1, 3, 5].map(i => parseInt(a.slice(i, i + 2), 16));
+  const pb = [1, 3, 5].map(i => parseInt(b.slice(i, i + 2), 16));
+  return '#' + pa.map((v, i) =>
+    Math.round(v + (pb[i] - v) * t).toString(16).padStart(2, '0')).join('');
+}
+function fillClr(v) {
+  const { min, max } = _frScale;
+  const t = max > min ? Math.max(0, Math.min(1, (v - min) / (max - min))) : 1;
+  return t < 0.5 ? _hexBlend('#FF6B6B', '#FFD966', t * 2)
+                 : _hexBlend('#FFD966', '#70AD47', (t - 0.5) * 2);
+}
 
 // ── Charts ────────────────────────────────────────────────────────────────────
 let _chartFR = null, _chartVol = null;
@@ -868,6 +841,7 @@ let _chartFR = null, _chartVol = null;
 function renderCharts(tab, rows) {
   const raw = tab === 'customer' ? aggregateCustomersTab(rows) : aggregate(rows, TABS[tab].key);
   const data = raw.filter(r => !r.isTotal).slice(0, 15);  // top 15 rows, skip grand total
+  setFillScale(data);
   const labels = data.map(r => r.label.length > 20 ? r.label.slice(0,18)+'…' : r.label);
 
   // ── Fill Rate % horizontal bar ─────────────────────────────────────────────
@@ -999,7 +973,13 @@ def upload():
                 .dt.strftime("%Y-%m-%d")
             )
 
-        df["Origin"] = df.apply(get_origin, axis=1)
+        # Origin comes straight from the file's own "Origin" column
+        if "Origin" in df.columns:
+            df["Origin"] = df["Origin"].apply(
+                lambda v: str(v).strip() if pd.notna(v) else ""
+            )
+        else:
+            df["Origin"] = ""
 
         # Override Customer Group for Instamart customers
         if "Customer" in df.columns:
