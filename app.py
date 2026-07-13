@@ -698,16 +698,13 @@ const fmtD = n => n.toLocaleString('en-IN', { maximumFractionDigits: 3 });
 const thP  = (txt, align) =>
   `<th class="px-2 py-2 text-${align} text-xs font-bold text-slate-800 uppercase tracking-wide">${txt}</th>`;
 
-function renderPivotTable(tab, rows) {
+// Shared pivot computation → { headers: [...], rows: [[label, v1, ...], ...] }
+// (last row is Grand Total; zero cells are '' so table and Excel both show blanks)
+function pivotData(tab, rows) {
   const cfg = PIVOT_TABS[tab];
-  const thead = document.getElementById('table-head');
-  if (DEFAULT_THEAD === null) DEFAULT_THEAD = thead.innerHTML;
-
-  // Only rows that actually have closed quantity
   const closedRows = rows.filter(r => (r['Closed Kgs'] || 0) > 0);
   const keyOf = r => String(r[cfg.row] || '').trim() || '(Blank)';
-
-  let headHtml, bodyHtml = '';
+  const rnd = v => Math.round(v * 1000) / 1000;
 
   if (cfg.col) {
     // ── Matrix pivot: rows × remark columns, cells = sum of Closed Kgs ────────
@@ -723,52 +720,47 @@ function renderPivotTable(tab, rows) {
       grand += v;
     });
     const cols = Object.keys(colTotals).sort((a, b) => colTotals[b] - colTotals[a]);
-    const rws  = Object.entries(g).sort((a, b) => b[1].total - a[1].total);
-
-    headHtml = `<tr class="bg-slate-100 border-b-2 border-slate-300">
-      ${thP(cfg.label, 'left')}${cols.map(c => thP(esc(c), 'right')).join('')}${thP('Grand Total', 'right')}</tr>`;
-
-    const cell = v => `<td class="px-2 py-1 text-right text-gray-900 font-semibold">${v ? fmtD(v) : ''}</td>`;
-    rws.forEach(([label, { total, cells }]) => {
-      bodyHtml += `<tr class="border-t border-gray-200">
-        <td class="px-2 py-1 text-gray-900 font-semibold">${esc(label)}</td>
-        ${cols.map(c => cell(cells[c] || 0)).join('')}
-        <td class="px-2 py-1 text-right text-gray-900 font-extrabold">${fmtD(total)}</td></tr>`;
-    });
-    bodyHtml += `<tr class="grand-total border-t border-gray-200">
-      <td class="px-2 py-1">Grand Total</td>
-      ${cols.map(c => `<td class="px-2 py-1 text-right">${fmtD(colTotals[c])}</td>`).join('')}
-      <td class="px-2 py-1 text-right">${fmtD(grand)}</td></tr>`;
-
-  } else {
-    // ── Simple pivot: key → sum of Closed Kgs ─────────────────────────────────
-    const g = {};
-    let grand = 0;
-    closedRows.forEach(r => {
-      const k = keyOf(r), v = r['Closed Kgs'] || 0;
-      g[k] = (g[k] || 0) + v;
-      grand += v;
-    });
-    let entries = Object.entries(g);
-    entries = tab === 'closed-date'
-      ? entries.sort((a, b) => a[0] < b[0] ? -1 : 1)   // dates ascending
-      : entries.sort((a, b) => b[1] - a[1]);           // remarks by volume desc
-
-    headHtml = `<tr class="bg-slate-100 border-b-2 border-slate-300">
-      ${thP(cfg.label, 'left')}${thP('Sum of Closed Kgs', 'right')}</tr>`;
-
-    entries.forEach(([label, v]) => {
-      bodyHtml += `<tr class="border-t border-gray-200">
-        <td class="px-2 py-1 text-gray-900 font-semibold">${esc(label)}</td>
-        <td class="px-2 py-1 text-right text-gray-900 font-semibold">${fmtD(v)}</td></tr>`;
-    });
-    bodyHtml += `<tr class="grand-total border-t border-gray-200">
-      <td class="px-2 py-1">Grand Total</td>
-      <td class="px-2 py-1 text-right">${fmtD(grand)}</td></tr>`;
+    const body = Object.entries(g).sort((a, b) => b[1].total - a[1].total)
+      .map(([label, { total, cells }]) =>
+        [label, ...cols.map(c => cells[c] ? rnd(cells[c]) : ''), rnd(total)]);
+    body.push(['Grand Total', ...cols.map(c => rnd(colTotals[c])), rnd(grand)]);
+    return { headers: [cfg.label, ...cols, 'Grand Total'], rows: body };
   }
 
-  thead.innerHTML = headHtml;
-  document.getElementById('table-body').innerHTML = bodyHtml;
+  // ── Simple pivot: key → sum of Closed Kgs ───────────────────────────────────
+  const g = {};
+  let grand = 0;
+  closedRows.forEach(r => {
+    const k = keyOf(r), v = r['Closed Kgs'] || 0;
+    g[k] = (g[k] || 0) + v;
+    grand += v;
+  });
+  let entries = Object.entries(g);
+  entries = tab === 'closed-date'
+    ? entries.sort((a, b) => a[0] < b[0] ? -1 : 1)   // dates ascending
+    : entries.sort((a, b) => b[1] - a[1]);           // remarks by volume desc
+  const body = entries.map(([label, v]) => [label, rnd(v)]);
+  body.push(['Grand Total', rnd(grand)]);
+  return { headers: [cfg.label, 'Sum of Closed Kgs'], rows: body };
+}
+
+function renderPivotTable(tab, rows) {
+  const thead = document.getElementById('table-head');
+  if (DEFAULT_THEAD === null) DEFAULT_THEAD = thead.innerHTML;
+
+  const { headers, rows: body } = pivotData(tab, rows);
+  const boldLastCol = !!PIVOT_TABS[tab].col;   // matrix has a Grand Total column
+
+  thead.innerHTML = `<tr class="bg-slate-100 border-b-2 border-slate-300">
+    ${headers.map((h, i) => thP(esc(h), i ? 'right' : 'left')).join('')}</tr>`;
+
+  const last = body.length - 1;
+  document.getElementById('table-body').innerHTML = body.map((r, i) => `
+    <tr class="${i === last ? 'grand-total ' : ''}border-t border-gray-200">
+      ${r.map((v, j) => j === 0
+        ? `<td class="px-2 py-1 text-gray-900 font-semibold">${esc(v)}</td>`
+        : `<td class="px-2 py-1 text-right text-gray-900 ${boldLastCol && j === r.length - 1 ? 'font-extrabold' : 'font-semibold'}">${v === '' ? '' : fmtD(v)}</td>`
+      ).join('')}</tr>`).join('');
 }
 
 // ── Table rendering ───────────────────────────────────────────────────────────
@@ -886,11 +878,21 @@ async function downloadExcel() {
       fillRate: r.fillRate, closedPct: r.closedPct, penDis: r.penDis,
     }));
   }
+  // Pivot sheets: same data as the three Closed Kgs tabs
+  const PIVOT_SHEET_NAMES = {
+    'closed-date':   'Closed Kgs',
+    'closed-remark': 'Item Close Remark',
+    'closed-parent': 'Parent wise - Closed Kgs',
+  };
+  const pivot_sheets = {};
+  for (const [tab, name] of Object.entries(PIVOT_SHEET_NAMES)) {
+    pivot_sheets[name] = pivotData(tab, rows);
+  }
   try {
     const res = await fetch('/api/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sheets }),
+      body: JSON.stringify({ sheets, pivot_sheets }),
     });
     if (!res.ok) { alert('Download failed'); return; }
     const blob = await res.blob();
@@ -1137,6 +1139,22 @@ def download():
                     "Pen Dis %":    f"{int(round(r['penDis']    * 100))}%",
                 })
             frame = pd.DataFrame(rows)
+            frame.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+            ws = writer.sheets[sheet_name[:31]]
+            for col_cells in ws.columns:
+                max_len = max(
+                    (len(str(c.value)) for c in col_cells if c.value is not None),
+                    default=8,
+                )
+                ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 45)
+
+        # Pivot sheets: generic header + row-list tables from the Closed Kgs tabs
+        for sheet_name, pv in (data.get("pivot_sheets") or {}).items():
+            headers = pv.get("headers")
+            records = pv.get("rows")
+            if not headers or not records:
+                continue
+            frame = pd.DataFrame(records, columns=headers)
             frame.to_excel(writer, sheet_name=sheet_name[:31], index=False)
             ws = writer.sheets[sheet_name[:31]]
             for col_cells in ws.columns:
