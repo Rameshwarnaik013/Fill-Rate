@@ -151,12 +151,18 @@ HTML = """<!DOCTYPE html>
                 onclick="switchTab('customer',this)">&#127978; Customer</button>
         <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
                 onclick="switchTab('origin',this)">&#127758; Origin</button>
+        <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
+                onclick="switchTab('closed-date',this)">&#128274; Closed Kgs</button>
+        <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
+                onclick="switchTab('closed-remark',this)">&#128221; Item Close Remark</button>
+        <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
+                onclick="switchTab('closed-parent',this)">&#128202; Parent wise - Closed Kgs</button>
       </div>
 
       <!-- Table -->
       <div class="overflow-x-auto">
         <table class="w-full border-collapse" style="font-size:13px;font-weight:500;">
-          <thead>
+          <thead id="table-head">
             <tr class="bg-slate-100 border-b-2 border-slate-300">
               <th class="px-2 py-2 text-left text-xs font-bold text-slate-800 uppercase tracking-wide" id="col-label">Item Group</th>
               <th class="px-2 py-2 text-right text-xs font-bold text-slate-800 uppercase tracking-wide">Stock (KGS)</th>
@@ -174,7 +180,7 @@ HTML = """<!DOCTYPE html>
     </div>
 
     <!-- Charts -->
-    <div class="bg-white rounded-2xl shadow-sm p-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div id="charts-card" class="bg-white rounded-2xl shadow-sm p-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
       <div>
         <p class="text-xs font-bold text-slate-600 uppercase tracking-wide mb-2">Fill Rate % by Group</p>
         <div style="position:relative;height:280px"><canvas id="chart-fillrate"></canvas></div>
@@ -234,6 +240,13 @@ const TABS = {
   'origin':          { key: 'Origin',             label: 'Origin'     },
 };
 
+// Pivot tabs: sum of Closed Kgs, separate table layout (standard tabs untouched)
+const PIVOT_TABS = {
+  'closed-date':   { row: 'Sales Order Date',  label: 'SO Date' },
+  'closed-remark': { row: 'Item Close Remark', label: 'Closed Remarks' },
+  'closed-parent': { row: 'Parent Item',       label: 'Parent Name', col: 'Item Close Remark' },
+};
+
 // ── Data-processing constants (mirrors Python server logic exactly) ────────────
 const INSTAMART_CUSTOMERS_JS = new Set([
   "PJTJ Technologies Private Limited","Cloudstore Retail Private Limited",
@@ -248,7 +261,7 @@ const CUSTOMER_RENAMES_JS = {
 const REQUIRED_COLS = ["Stock Qty in KGS","Delivered Qty (Kgs)","Closed Kgs",
                        "Pending Dispatch Kgs","NEW MIS ITEM GROUP"];
 const KEEP_COLS = ["NEW MIS ITEM GROUP","Parent Item","Sales Order Date",
-                   "Customer Group","Customer","Client Type","Origin",
+                   "Customer Group","Customer","Client Type","Origin","Item Close Remark",
                    "Stock Qty in KGS","Delivered Qty (Kgs)","Closed Kgs","Pending Dispatch Kgs"];
 
 // ── Upload / Drag & Drop ──────────────────────────────────────────────────────
@@ -533,9 +546,10 @@ function switchTab(tab, btn) {
   currentTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  document.getElementById('col-label').textContent = TABS[tab].label;
   const rows = filteredRows();
-  renderTable(tab, rows);
+  renderTable(tab, rows);   // restores/replaces thead, so set col-label after
+  const colLabel = document.getElementById('col-label');
+  if (colLabel && TABS[tab]) colLabel.textContent = TABS[tab].label;
   renderCharts(tab, rows);
 }
 
@@ -677,8 +691,94 @@ function regularRow(r) {
     ${metricCells(r, 'md')}</tr>`;
 }
 
+// ── Pivot tabs (Closed Kgs) ───────────────────────────────────────────────────
+let DEFAULT_THEAD = null;   // captured on first swap so standard tabs restore exactly
+
+const fmtD = n => n.toLocaleString('en-IN', { maximumFractionDigits: 3 });
+const thP  = (txt, align) =>
+  `<th class="px-2 py-2 text-${align} text-xs font-bold text-slate-800 uppercase tracking-wide">${txt}</th>`;
+
+function renderPivotTable(tab, rows) {
+  const cfg = PIVOT_TABS[tab];
+  const thead = document.getElementById('table-head');
+  if (DEFAULT_THEAD === null) DEFAULT_THEAD = thead.innerHTML;
+
+  // Only rows that actually have closed quantity
+  const closedRows = rows.filter(r => (r['Closed Kgs'] || 0) > 0);
+  const keyOf = r => String(r[cfg.row] || '').trim() || '(Blank)';
+
+  let headHtml, bodyHtml = '';
+
+  if (cfg.col) {
+    // ── Matrix pivot: rows × remark columns, cells = sum of Closed Kgs ────────
+    const colOf = r => String(r[cfg.col] || '').trim() || '(Blank)';
+    const g = {}, colTotals = {};
+    let grand = 0;
+    closedRows.forEach(r => {
+      const rk = keyOf(r), ck = colOf(r), v = r['Closed Kgs'] || 0;
+      if (!g[rk]) g[rk] = { total: 0, cells: {} };
+      g[rk].cells[ck] = (g[rk].cells[ck] || 0) + v;
+      g[rk].total += v;
+      colTotals[ck] = (colTotals[ck] || 0) + v;
+      grand += v;
+    });
+    const cols = Object.keys(colTotals).sort((a, b) => colTotals[b] - colTotals[a]);
+    const rws  = Object.entries(g).sort((a, b) => b[1].total - a[1].total);
+
+    headHtml = `<tr class="bg-slate-100 border-b-2 border-slate-300">
+      ${thP(cfg.label, 'left')}${cols.map(c => thP(esc(c), 'right')).join('')}${thP('Grand Total', 'right')}</tr>`;
+
+    const cell = v => `<td class="px-2 py-1 text-right text-gray-900 font-semibold">${v ? fmtD(v) : ''}</td>`;
+    rws.forEach(([label, { total, cells }]) => {
+      bodyHtml += `<tr class="border-t border-gray-200">
+        <td class="px-2 py-1 text-gray-900 font-semibold">${esc(label)}</td>
+        ${cols.map(c => cell(cells[c] || 0)).join('')}
+        <td class="px-2 py-1 text-right text-gray-900 font-extrabold">${fmtD(total)}</td></tr>`;
+    });
+    bodyHtml += `<tr class="grand-total border-t border-gray-200">
+      <td class="px-2 py-1">Grand Total</td>
+      ${cols.map(c => `<td class="px-2 py-1 text-right">${fmtD(colTotals[c])}</td>`).join('')}
+      <td class="px-2 py-1 text-right">${fmtD(grand)}</td></tr>`;
+
+  } else {
+    // ── Simple pivot: key → sum of Closed Kgs ─────────────────────────────────
+    const g = {};
+    let grand = 0;
+    closedRows.forEach(r => {
+      const k = keyOf(r), v = r['Closed Kgs'] || 0;
+      g[k] = (g[k] || 0) + v;
+      grand += v;
+    });
+    let entries = Object.entries(g);
+    entries = tab === 'closed-date'
+      ? entries.sort((a, b) => a[0] < b[0] ? -1 : 1)   // dates ascending
+      : entries.sort((a, b) => b[1] - a[1]);           // remarks by volume desc
+
+    headHtml = `<tr class="bg-slate-100 border-b-2 border-slate-300">
+      ${thP(cfg.label, 'left')}${thP('Sum of Closed Kgs', 'right')}</tr>`;
+
+    entries.forEach(([label, v]) => {
+      bodyHtml += `<tr class="border-t border-gray-200">
+        <td class="px-2 py-1 text-gray-900 font-semibold">${esc(label)}</td>
+        <td class="px-2 py-1 text-right text-gray-900 font-semibold">${fmtD(v)}</td></tr>`;
+    });
+    bodyHtml += `<tr class="grand-total border-t border-gray-200">
+      <td class="px-2 py-1">Grand Total</td>
+      <td class="px-2 py-1 text-right">${fmtD(grand)}</td></tr>`;
+  }
+
+  thead.innerHTML = headHtml;
+  document.getElementById('table-body').innerHTML = bodyHtml;
+}
+
 // ── Table rendering ───────────────────────────────────────────────────────────
 function renderTable(tab, rows) {
+  if (PIVOT_TABS[tab]) { renderPivotTable(tab, rows); return; }
+  // Standard tab: restore the original 8-column header if a pivot replaced it
+  if (DEFAULT_THEAD !== null) {
+    document.getElementById('table-head').innerHTML = DEFAULT_THEAD;
+    DEFAULT_THEAD = null;
+  }
   let html = '';
 
   if (tab === 'customer') {
@@ -839,6 +939,10 @@ function fillClr(v) {
 let _chartFR = null, _chartVol = null;
 
 function renderCharts(tab, rows) {
+  // Pivot tabs have no fill-rate series — hide the charts card entirely
+  const chartsCard = document.getElementById('charts-card');
+  if (PIVOT_TABS[tab]) { chartsCard.style.display = 'none'; return; }
+  chartsCard.style.display = '';
   const raw = tab === 'customer' ? aggregateCustomersTab(rows) : aggregate(rows, TABS[tab].key);
   const data = raw.filter(r => !r.isTotal).slice(0, 15);  // top 15 rows, skip grand total
   setFillScale(data);
@@ -995,7 +1099,8 @@ def upload():
             )
 
         keep = ["NEW MIS ITEM GROUP", "Parent Item", "Sales Order Date",
-                "Customer Group", "Customer", "Client Type", "Origin"] + num_cols
+                "Customer Group", "Customer", "Client Type", "Origin",
+                "Item Close Remark"] + num_cols
         keep = [c for c in keep if c in df.columns]
 
         rows = _json.loads(df[keep].to_json(orient="records"))
