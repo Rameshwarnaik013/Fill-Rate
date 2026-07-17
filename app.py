@@ -157,6 +157,8 @@ HTML = """<!DOCTYPE html>
                 onclick="switchTab('closed-remark',this)">&#128221; Item Close Remark</button>
         <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
                 onclick="switchTab('closed-parent',this)">&#128202; Parent wise - Closed Kgs</button>
+        <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
+                onclick="switchTab('customer-group-excl',this)">&#128101; Customer Group (excluded)</button>
       </div>
 
       <!-- Table -->
@@ -238,7 +240,20 @@ const TABS = {
   'customer-group':  { key: 'Customer Group',     label: 'Customer Group' },
   'customer':        { key: 'Customer',           label: 'Customer'   },
   'origin':          { key: 'Origin',             label: 'Origin'     },
+  'customer-group-excl': { key: 'Customer Group', label: 'Customer Group (excluded)' },
 };
+
+// "Customer Group (excluded)" tab: same behaviour as Customer Group, minus these
+const EXCLUDED_CGS = new Set(['Airlines', 'Amazon Retail India', 'Category A']);
+function exclusionRows(rows) {
+  return rows.filter(r => {
+    const cg = String(r['Customer Group'] || '').trim();
+    if (EXCLUDED_CGS.has(cg)) return false;
+    if (cg === 'E-Commerce' &&
+        String(r['Customer'] || '').trim().startsWith('Flipkart India Private Limited')) return false;
+    return true;
+  });
+}
 
 // Pivot tabs: sum of Closed Kgs, separate table layout (standard tabs untouched)
 const PIVOT_TABS = {
@@ -771,6 +786,7 @@ function renderTable(tab, rows) {
     document.getElementById('table-head').innerHTML = DEFAULT_THEAD;
     DEFAULT_THEAD = null;
   }
+  if (tab === 'customer-group-excl') rows = exclusionRows(rows);
   let html = '';
 
   if (tab === 'customer') {
@@ -798,7 +814,7 @@ function renderTable(tab, rows) {
             .filter(s => !s.isTotal)
             .forEach(s => { html += childRow(s.label, s); });
         }
-      } else if (tab === 'customer-group' && !r.isTotal) {
+      } else if ((tab === 'customer-group' || tab === 'customer-group-excl') && !r.isTotal) {
         const exp = expandedCGRows.has(r.label);
         html += expandableRow('data-cg', r.label, r, exp);
         if (exp) {
@@ -842,7 +858,7 @@ function renderTable(tab, rows) {
 // ── Unified click handler for all expandable tabs ────────────────────────────
 document.getElementById('table-body').addEventListener('click', e => {
   // Second-level toggle inside Customer Group: Amazon / Flipkart → Client Type
-  if (currentTab === 'customer-group') {
+  if (currentTab === 'customer-group' || currentTab === 'customer-group-excl') {
     const trCC = e.target.closest('tr[data-cg-customer]');
     if (trCC) {
       const ck = trCC.dataset.cgCustomer;   // data-cg-customer → dataset.cgCustomer
@@ -852,9 +868,10 @@ document.getElementById('table-body').addEventListener('click', e => {
     }
   }
   const handlers = {
-    'item-group':     ['tr[data-group]',    'group',    expandedGroups],
-    'customer-group': ['tr[data-cg]',       'cg',       expandedCGRows],
-    'customer':       ['tr[data-customer]', 'customer', expandedCustomers],
+    'item-group':          ['tr[data-group]',    'group',    expandedGroups],
+    'customer-group':      ['tr[data-cg]',       'cg',       expandedCGRows],
+    'customer-group-excl': ['tr[data-cg]',       'cg',       expandedCGRows],
+    'customer':            ['tr[data-customer]', 'customer', expandedCustomers],
   };
   const h = handlers[currentTab];
   if (!h) return;
@@ -871,8 +888,9 @@ async function downloadExcel() {
   btn.textContent = 'Generating…'; btn.disabled = true;
   const rows = filteredRows();
   const sheets = {};
-  for (const [, { key, label }] of Object.entries(TABS)) {
-    sheets[label] = aggregate(rows, key).map(r => ({
+  for (const [tabId, { key, label }] of Object.entries(TABS)) {
+    const src = tabId === 'customer-group-excl' ? exclusionRows(rows) : rows;
+    sheets[label] = aggregate(src, key).map(r => ({
       label: r.label, stock: r.stock, delivered: r.delivered,
       closed: r.closed, pending: r.pending,
       fillRate: r.fillRate, closedPct: r.closedPct, penDis: r.penDis,
@@ -945,6 +963,7 @@ function renderCharts(tab, rows) {
   const chartsCard = document.getElementById('charts-card');
   if (PIVOT_TABS[tab]) { chartsCard.style.display = 'none'; return; }
   chartsCard.style.display = '';
+  if (tab === 'customer-group-excl') rows = exclusionRows(rows);
   const raw = tab === 'customer' ? aggregateCustomersTab(rows) : aggregate(rows, TABS[tab].key);
   const data = raw.filter(r => !r.isTotal).slice(0, 15);  // top 15 rows, skip grand total
   setFillScale(data);
