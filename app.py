@@ -311,6 +311,113 @@ fileInput.addEventListener('change', e => {
   if (file) previewFile(file);
 });
 
+// ── Row extraction ────────────────────────────────────────────────────────────
+// Single source of truth: runs on the main thread AND is shipped into the Web Worker
+// via toString(), so both paths apply exactly the same rules. Must stay self-contained
+// (everything it needs arrives in cfg) for the worker copy to work.
+async function extractRowsFromSheet(X, ws, cfg, onProgress) {
+  var KEEP = cfg.KEEP_COLS, REQ = cfg.REQUIRED_COLS, NUM = cfg.NUM_COLS;
+  var INSTA = cfg.INSTAMART, REN = cfg.RENAMES;
+  var isDense = Array.isArray(ws);
+  var range = X.utils.decode_range(ws['!ref'] || 'A1:A1');
+  function cellText(cell) {
+    return (!cell || cell.t == null || cell.t === 'z') ? '' : X.utils.format_cell(cell);
+  }
+  function cellAt(R, C) {
+    if (isDense) { var row = ws[R]; return row ? row[C] : undefined; }
+    return ws[X.utils.encode_cell({ r: R, c: C })];
+  }
+  if (range.e.r <= range.s.r) return { empty: true };
+
+  // Header row → column indices (case/space-insensitive, same precedence as before)
+  var fileHeaders = [];
+  for (var C = range.s.c; C <= range.e.c; C++) {
+    fileHeaders.push(String(cellText(cellAt(range.s.r, C))).trim());
+  }
+  function norm(s) { return s.toLowerCase().replace(/\\s+/g, ''); }
+  var hMap = {};
+  KEEP.forEach(function (canon) {
+    var idx = fileHeaders.indexOf(canon);
+    if (idx < 0) idx = fileHeaders.findIndex(function (h) { return h.toLowerCase() === canon.toLowerCase(); });
+    if (idx < 0) idx = fileHeaders.findIndex(function (h) { return norm(h) === norm(canon); });
+    hMap[canon] = idx < 0 ? null : range.s.c + idx;   // note: 0 is a valid column index
+  });
+  var missing = REQ.filter(function (c) { return hMap[c] == null; });
+  if (missing.length) return { missing: missing, fileHeaders: fileHeaders };
+
+  // Read only the needed columns straight off the worksheet — materialising every column
+  // of every row first is what pushes a 230k-row file past the heap limit and truncates it.
+  var rows = [], skipped = 0;
+  var total = range.e.r - range.s.r, CHUNK = 5000;
+  for (var R = range.s.r + 1; R <= range.e.r; R++) {
+    var denseRow = isDense ? ws[R] : null;
+    var r = {};
+    for (var j = 0; j < KEEP.length; j++) {
+      var canon = KEEP[j], Ci = hMap[canon];
+      r[canon] = Ci == null ? ''
+        : cellText(isDense ? (denseRow ? denseRow[Ci] : undefined) : cellAt(R, Ci));
+    }
+    // Numeric coerce
+    for (var n = 0; n < NUM.length; n++) r[NUM[n]] = parseFloat(r[NUM[n]]) || 0;
+    // Instamart override
+    var cust = String(r['Customer'] || '').trim();
+    if (INSTA.indexOf(cust) >= 0) r['Customer Group'] = 'Instamart';
+    // Customer rename
+    r['Customer'] = REN[cust] || cust;
+    // Origin taken directly from the file's "Origin" column
+    r['Origin'] = String(r['Origin'] || '').trim();
+    if (String(r['NEW MIS ITEM GROUP'] || '').trim() !== '') rows.push(r); else skipped++;
+    if (isDense) ws[R] = null;   // release each parsed source row as it is consumed
+    var done = R - range.s.r;
+    if (onProgress && total > CHUNK && done % CHUNK === 0) await onProgress(done, total);
+  }
+  return { rows: rows, skipped: skipped, total: total, fileHeaders: fileHeaders };
+}
+
+// Worker source: same extractor, but the workbook is parsed off the main thread so the
+// page's heap only ever holds the slim result. Falls back to main-thread parsing on error.
+const WORKER_SRC =
+  "importScripts('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');\\n" +
+  "const extractRowsFromSheet = " + extractRowsFromSheet.toString() + ";\\n" +
+  "onmessage = async function (e) { try {" +
+  "  var d = e.data;" +
+  "  var wb = d.text != null" +
+  "    ? XLSX.read(d.text, { type:'string', dense:true, cellDates:true, dateNF:'yyyy-mm-dd' })" +
+  "    : XLSX.read(d.buf, { type:'array', dense:true, cellDates:true, dateNF:'yyyy-mm-dd'," +
+  "                         cellFormula:false, cellHTML:false, cellStyles:false });" +
+  "  var ws = wb.Sheets[wb.SheetNames[0]];" +
+  "  var result = await extractRowsFromSheet(XLSX, ws, d.cfg, function (a, b) { postMessage({ progress:[a,b] }); });" +
+  "  wb = null; ws = null;" +
+  "  postMessage({ result: result });" +
+  "} catch (err) { postMessage({ err: String((err && err.message) || err) }); } };";
+
+function parseWithWorker(file, cfg) {
+  return new Promise(function (resolve, reject) {
+    if (typeof Worker === 'undefined') { reject(new Error('Workers unavailable')); return; }
+    var url, w;
+    try {
+      url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+      w = new Worker(url);
+    } catch (e) { reject(e); return; }
+    var cleanup = function () { try { w.terminate(); URL.revokeObjectURL(url); } catch (_) {} };
+    w.onerror = function (ev) { cleanup(); reject(new Error(ev.message || 'worker failed to start')); };
+    w.onmessage = function (ev) {
+      var d = ev.data;
+      if (d && d.progress) {
+        setMsg('⏳ Processing ' + d.progress[0].toLocaleString() + ' / ' +
+               d.progress[1].toLocaleString() + ' rows…');
+        return;
+      }
+      cleanup();
+      if (d && d.err) reject(new Error(d.err)); else resolve(d.result);
+    };
+    var isCsv = /\\.csv$/i.test(file.name);
+    (isCsv ? file.text().then(function (text) { w.postMessage({ text: text, cfg: cfg }); })
+           : file.arrayBuffer().then(function (buf) { w.postMessage({ buf: buf, cfg: cfg }, [buf]); })
+    ).catch(function (e) { cleanup(); reject(e); });
+  });
+}
+
 async function previewFile(file) {
   selectedFile = file;
   parsedCsvData = null;
@@ -328,78 +435,62 @@ async function previewFile(file) {
 
   try {
     const isCsv = /\\.csv$/i.test(file.name);
-    let wb;
-    if (isCsv) {
-      // CSV: read as text so the delimiter/encoding sniffing works on the raw characters
-      const text = await file.text();
-      await yieldUI();   // let the "Reading file…" message paint before the blocking parse
-      wb = XLSX.read(text, { type: 'string', dense: true, cellDates: true, dateNF: 'yyyy-mm-dd' });
-    } else {
-      const ab = await file.arrayBuffer();
-      await yieldUI();   // let the "Reading file…" message paint before the blocking parse
-      // dense mode + skipping formula/HTML/style parsing roughly halves both the time and
-      // the memory needed for large workbooks (10 MB+), which otherwise stall or OOM the tab
-      wb = XLSX.read(ab, { type: 'array', dense: true, cellDates: true, dateNF: 'yyyy-mm-dd',
-                           cellFormula: false, cellHTML: false, cellStyles: false });
+    const cfg = {
+      KEEP_COLS: KEEP_COLS,
+      REQUIRED_COLS: REQUIRED_COLS,
+      NUM_COLS: ['Stock Qty in KGS','Delivered Qty (Kgs)','Closed Kgs','Pending Dispatch Kgs'],
+      INSTAMART: [...INSTAMART_CUSTOMERS_JS],
+      RENAMES: CUSTOMER_RENAMES_JS,
+    };
+
+    // Preferred path: parse in a Worker, so the workbook (by far the biggest allocation on
+    // a 200k+ row file) lives in its own heap and never competes with the page.
+    let res = null;
+    try {
+      res = await parseWithWorker(file, cfg);
+    } catch (werr) {
+      console.warn('Worker parse unavailable, falling back to main thread:', werr.message);
+      res = null;
     }
-    let ws = wb.Sheets[wb.SheetNames[0]];
-    const rawRows = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd', defval: '' });
-    wb = null; ws = null;   // drop the parsed workbook before building allRows
 
-    if (!rawRows.length) { setMsg('⚠ File appears empty', true); resetBtn(); return; }
+    if (!res) {
+      let wb;
+      if (isCsv) {
+        // CSV: read as text so the delimiter/encoding sniffing works on the raw characters
+        const text = await file.text();
+        await yieldUI();   // let the "Reading file…" message paint before the blocking parse
+        wb = XLSX.read(text, { type: 'string', dense: true, cellDates: true, dateNF: 'yyyy-mm-dd' });
+      } else {
+        const ab = await file.arrayBuffer();
+        await yieldUI();   // let the "Reading file…" message paint before the blocking parse
+        // dense mode + skipping formula/HTML/style parsing roughly halves both the time and
+        // the memory needed for large workbooks, which otherwise stall or OOM the tab
+        wb = XLSX.read(ab, { type: 'array', dense: true, cellDates: true, dateNF: 'yyyy-mm-dd',
+                             cellFormula: false, cellHTML: false, cellStyles: false });
+      }
+      let ws = wb.Sheets[wb.SheetNames[0]];
+      res = await extractRowsFromSheet(XLSX, ws, cfg, async (done, total) => {
+        setMsg('⏳ Processing ' + done.toLocaleString() + ' / ' + total.toLocaleString() + ' rows…');
+        await yieldUI();
+      });
+      wb = null; ws = null;   // drop the parsed workbook
+    }
 
-    // Build a canonical→actual header map (case/space-insensitive)
-    const fileHeaders = Object.keys(rawRows[0]).map(h => h.trim());
-    const hMap = {};
-    KEEP_COLS.forEach(canon => {
-      hMap[canon] =
-        fileHeaders.find(h => h === canon) ||
-        fileHeaders.find(h => h.toLowerCase() === canon.toLowerCase()) ||
-        fileHeaders.find(h => h.toLowerCase().replace(/\\s+/g,'') === canon.toLowerCase().replace(/\\s+/g,'')) ||
-        null;
-    });
-
-    // Validate required columns
-    const missing = REQUIRED_COLS.filter(r => !hMap[r]);
-    if (missing.length) {
-      setMsg('❌ Missing columns: ' + missing.join(', ') +
-             '<br><small style="color:#9ca3af">Found: ' + fileHeaders.join(', ') + '</small>', true);
+    if (res.empty) { setMsg('⚠ File appears empty', true); resetBtn(); return; }
+    if (res.missing) {
+      setMsg('❌ Missing columns: ' + res.missing.join(', ') +
+             '<br><small style="color:#9ca3af">Found: ' + res.fileHeaders.join(', ') + '</small>', true);
       resetBtn(); return;
     }
 
-    const numCols = ['Stock Qty in KGS','Delivered Qty (Kgs)','Closed Kgs','Pending Dispatch Kgs'];
-
-    // Process every row entirely in the browser, in chunks so the tab stays responsive
-    // and each source row can be released as soon as it has been converted
-    const total = rawRows.length;
-    const CHUNK = 5000;
-    for (let start = 0; start < total; start += CHUNK) {
-      const end = Math.min(start + CHUNK, total);
-      for (let i = start; i < end; i++) {
-        const raw = rawRows[i];
-        rawRows[i] = null;
-        const r = {};
-        for (const canon of KEEP_COLS) {
-          r[canon] = hMap[canon] ? (raw[hMap[canon]] !== undefined ? raw[hMap[canon]] : '') : '';
-        }
-        // Numeric coerce
-        for (const c of numCols) r[c] = parseFloat(r[c]) || 0;
-        // Instamart override
-        const cust = String(r['Customer'] || '').trim();
-        if (INSTAMART_CUSTOMERS_JS.has(cust)) r['Customer Group'] = 'Instamart';
-        // Customer rename
-        r['Customer'] = CUSTOMER_RENAMES_JS[cust] || cust;
-        // Origin taken directly from the file's "Origin" column
-        r['Origin'] = String(r['Origin'] || '').trim();
-        if (String(r['NEW MIS ITEM GROUP'] || '').trim() !== '') allRows.push(r);
-      }
-      if (total > CHUNK) {
-        setMsg('⏳ Processing ' + end.toLocaleString() + ' / ' + total.toLocaleString() + ' rows…');
-        await yieldUI();
-      }
-    }
-
-    setMsg('✓ ' + allRows.length.toLocaleString() + ' rows ready — click Generate Fill Rate');
+    allRows = res.rows;
+    // Call out any rows the blank-item-group rule dropped, so a lower count is never a mystery
+    const skippedNote = res.skipped
+      ? ' (' + res.skipped.toLocaleString() + ' of ' + res.total.toLocaleString() +
+        ' skipped — blank NEW MIS ITEM GROUP)'
+      : '';
+    setMsg('✓ ' + allRows.length.toLocaleString() + ' rows ready' + skippedNote +
+           ' — click Generate Fill Rate');
 
   } catch (e) {
     console.error('SheetJS error:', e);
