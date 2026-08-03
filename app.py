@@ -159,6 +159,8 @@ HTML = """<!DOCTYPE html>
                 onclick="switchTab('closed-parent',this)">&#128202; Parent wise - Closed Kgs</button>
         <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
                 onclick="switchTab('customer-group-excl',this)">&#128101; Customer Group (excluded)</button>
+        <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
+                onclick="switchTab('month',this)">&#128200; Month on Month</button>
       </div>
 
       <!-- Table -->
@@ -743,6 +745,31 @@ function regularRow(r) {
     ${metricCells(r, 'md')}</tr>`;
 }
 
+// ── Month on Month tab ────────────────────────────────────────────────────────
+const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function prettyMonth(ym) {
+  const m = /^(\\d{4})-(\\d{2})/.exec(ym);
+  return m ? MONTH_NAMES[+m[2] - 1] + ' ' + m[1] : ym;
+}
+
+// Rolls the filtered rows up to one row per calendar month, reusing aggregate() as-is.
+// The month key is named 'Sales Order Date' so aggregate() applies its chronological sort.
+function aggregateMonthData(rows) {
+  const slim = rows.map(r => {
+    const d = String(r['Sales Order Date'] || '').trim();
+    return {
+      'Sales Order Date':     d.length >= 7 ? d.slice(0, 7) : '',
+      'Stock Qty in KGS':     r['Stock Qty in KGS'],
+      'Delivered Qty (Kgs)':  r['Delivered Qty (Kgs)'],
+      'Closed Kgs':           r['Closed Kgs'],
+      'Pending Dispatch Kgs': r['Pending Dispatch Kgs'],
+    };
+  });
+  const data = aggregate(slim, 'Sales Order Date');
+  data.forEach(r => { if (!r.isTotal) r.label = prettyMonth(r.label); });
+  return data;
+}
+
 // ── Pivot tabs (Closed Kgs) ───────────────────────────────────────────────────
 let DEFAULT_THEAD = null;   // captured on first swap so standard tabs restore exactly
 
@@ -822,6 +849,13 @@ function renderTable(tab, rows) {
   if (DEFAULT_THEAD !== null) {
     document.getElementById('table-head').innerHTML = DEFAULT_THEAD;
     DEFAULT_THEAD = null;
+  }
+  if (tab === 'month') {
+    const data = aggregateMonthData(rows);
+    setFillScale(data);
+    document.getElementById('col-label').textContent = 'Month';
+    document.getElementById('table-body').innerHTML = data.map(regularRow).join('');
+    return;
   }
   if (tab === 'customer-group-excl') rows = exclusionRows(rows);
   let html = '';
@@ -943,6 +977,16 @@ async function downloadExcel() {
   for (const [tab, name] of Object.entries(PIVOT_SHEET_NAMES)) {
     pivot_sheets[name] = pivotData(tab, rows);
   }
+  // Month on Month trend, written through the same generic header+rows writer
+  pivot_sheets['Month on Month'] = {
+    headers: ['Month', 'Stock Qty in KGS', 'Delivered Qty (Kgs)', 'Closed Kgs',
+              'Pending Dispatch Kgs', 'Fill Rate %', 'Closed %', 'Pen Dis %'],
+    rows: aggregateMonthData(rows).map(r => [
+      r.label, fmtN(r.stock), fmtN(r.delivered),
+      r.closed > 0 ? fmtN(r.closed) : '-', r.pending > 0 ? fmtN(r.pending) : '-',
+      pct(r.fillRate), pct(r.closedPct), pct(r.penDis),
+    ]),
+  };
   try {
     const res = await fetch('/api/download', {
       method: 'POST',
@@ -995,11 +1039,63 @@ function fillClr(v) {
 // ── Charts ────────────────────────────────────────────────────────────────────
 let _chartFR = null, _chartVol = null;
 
+// Month on Month: percentages as a trend line, volumes as a vertical stacked bar
+function renderMonthCharts(rows) {
+  const data = aggregateMonthData(rows).filter(r => !r.isTotal);
+  const labels = data.map(r => r.label);
+  const line = (label, vals, color) => ({
+    label, data: vals, borderColor: color, backgroundColor: color + '22',
+    borderWidth: 2, tension: 0.3, pointRadius: 3, pointBackgroundColor: color, fill: false,
+  });
+
+  const frCtx = document.getElementById('chart-fillrate').getContext('2d');
+  if (_chartFR) _chartFR.destroy();
+  _chartFR = new Chart(frCtx, {
+    type: 'line',
+    data: { labels, datasets: [
+      line('Fill Rate %', data.map(r => +(r.fillRate  * 100).toFixed(1)), '#70AD47'),
+      line('Closed %',    data.map(r => +(r.closedPct * 100).toFixed(1)), '#E8A33D'),
+      line('Pen Dis %',   data.map(r => +(r.penDis    * 100).toFixed(1)), '#FF6B6B'),
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 10 } } },
+                 tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y}%` } } },
+      scales: {
+        y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%', font: { size: 10 } },
+             grid: { color: '#f1f5f9' } },
+        x: { ticks: { font: { size: 10 } }, grid: { display: false } }
+      }
+    }
+  });
+
+  const volCtx = document.getElementById('chart-volume').getContext('2d');
+  if (_chartVol) _chartVol.destroy();
+  _chartVol = new Chart(volCtx, {
+    type: 'bar',
+    data: { labels, datasets: [
+      { label: 'Delivered', data: data.map(r => r.delivered), backgroundColor: '#70AD47cc', borderRadius: 2 },
+      { label: 'Closed',    data: data.map(r => r.closed),    backgroundColor: '#FFD966cc', borderRadius: 2 },
+      { label: 'Pending',   data: data.map(r => r.pending),   backgroundColor: '#FF6B6Bcc', borderRadius: 2 },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'top', labels: { font: { size: 10 } } },
+                 tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtN(ctx.parsed.y)} KGS` } } },
+      scales: {
+        x: { stacked: true, ticks: { font: { size: 10 } }, grid: { display: false } },
+        y: { stacked: true, ticks: { font: { size: 10 } }, grid: { color: '#f1f5f9' } }
+      }
+    }
+  });
+}
+
 function renderCharts(tab, rows) {
   // Pivot tabs have no fill-rate series — hide the charts card entirely
   const chartsCard = document.getElementById('charts-card');
   if (PIVOT_TABS[tab]) { chartsCard.style.display = 'none'; return; }
   chartsCard.style.display = '';
+  if (tab === 'month') { renderMonthCharts(rows); return; }
   if (tab === 'customer-group-excl') rows = exclusionRows(rows);
   const raw = tab === 'customer' ? aggregateCustomersTab(rows) : aggregate(rows, TABS[tab].key);
   const data = raw.filter(r => !r.isTotal).slice(0, 15);  // top 15 rows, skip grand total
