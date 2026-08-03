@@ -315,18 +315,25 @@ async function previewFile(file) {
   allRows = [];
   const mb = (file.size / 1024 / 1024).toFixed(1);
   document.getElementById('selected-file-name').textContent = file.name + '  (' + mb + ' MB)';
-  setMsg('⏳ Reading Excel…');
+  setMsg('⏳ Reading Excel… large files may take a minute, please wait');
   dz.style.display = 'none';
   document.getElementById('file-ready-bar').style.display = 'block';
   // Disable Generate button while processing
   const btn = document.getElementById('generate-btn');
   btn.disabled = true; btn.style.opacity = '0.55'; btn.innerHTML = '⏳ Processing…';
 
+  const yieldUI = () => new Promise(r => setTimeout(r, 0));
+
   try {
     const ab = await file.arrayBuffer();
-    const wb = XLSX.read(ab, { type: 'array', cellDates: true, dateNF: 'yyyy-mm-dd' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
+    await yieldUI();   // let the "Reading Excel…" message paint before the blocking parse
+    // dense mode + skipping formula/HTML/style parsing roughly halves both the time and
+    // the memory needed for large workbooks (10 MB+), which otherwise stall or OOM the tab
+    let wb = XLSX.read(ab, { type: 'array', dense: true, cellDates: true, dateNF: 'yyyy-mm-dd',
+                             cellFormula: false, cellHTML: false, cellStyles: false });
+    let ws = wb.Sheets[wb.SheetNames[0]];
     const rawRows = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd', defval: '' });
+    wb = null; ws = null;   // drop the parsed workbook before building allRows
 
     if (!rawRows.length) { setMsg('⚠ File appears empty', true); resetBtn(); return; }
 
@@ -351,9 +358,15 @@ async function previewFile(file) {
 
     const numCols = ['Stock Qty in KGS','Delivered Qty (Kgs)','Closed Kgs','Pending Dispatch Kgs'];
 
-    // Process every row entirely in the browser
-    allRows = rawRows
-      .map(raw => {
+    // Process every row entirely in the browser, in chunks so the tab stays responsive
+    // and each source row can be released as soon as it has been converted
+    const total = rawRows.length;
+    const CHUNK = 5000;
+    for (let start = 0; start < total; start += CHUNK) {
+      const end = Math.min(start + CHUNK, total);
+      for (let i = start; i < end; i++) {
+        const raw = rawRows[i];
+        rawRows[i] = null;
         const r = {};
         for (const canon of KEEP_COLS) {
           r[canon] = hMap[canon] ? (raw[hMap[canon]] !== undefined ? raw[hMap[canon]] : '') : '';
@@ -367,16 +380,22 @@ async function previewFile(file) {
         r['Customer'] = CUSTOMER_RENAMES_JS[cust] || cust;
         // Origin taken directly from the file's "Origin" column
         r['Origin'] = String(r['Origin'] || '').trim();
-        return r;
-      })
-      .filter(r => String(r['NEW MIS ITEM GROUP'] || '').trim() !== '');
+        if (String(r['NEW MIS ITEM GROUP'] || '').trim() !== '') allRows.push(r);
+      }
+      if (total > CHUNK) {
+        setMsg('⏳ Processing ' + end.toLocaleString() + ' / ' + total.toLocaleString() + ' rows…');
+        await yieldUI();
+      }
+    }
 
     setMsg('✓ ' + allRows.length.toLocaleString() + ' rows ready — click Generate Fill Rate');
 
   } catch (e) {
     console.error('SheetJS error:', e);
     allRows = [];
-    setMsg('❌ Could not read file: ' + e.message, true);
+    setMsg('❌ Could not read file (' + mb + ' MB): ' + e.message +
+           '<br><small style="color:#9ca3af">For very large files: close other browser tabs and retry, ' +
+           'or re-save the sheet as .xlsx and remove unused columns.</small>', true);
   }
   resetBtn();
 }
@@ -419,7 +438,16 @@ function triggerGenerate() {
     return;
   }
 
-  // Fallback: if SheetJS failed, upload file to server
+  // Fallback: if SheetJS failed, upload file to server. Only worth attempting under the
+  // hosting request cap (4.5 MB) — beyond it the upload is guaranteed to be rejected.
+  if (selectedFile.size > 4 * 1024 * 1024) {
+    setMsg('❌ This file could not be read in the browser, and at ' +
+           (selectedFile.size / 1024 / 1024).toFixed(1) +
+           ' MB it is too large to send to the server (4.5 MB cap).' +
+           '<br><small style="color:#9ca3af">Close other browser tabs and try again, or split the ' +
+           'file by date range.</small>', true);
+    return;
+  }
   const btn = document.getElementById('generate-btn');
   btn.disabled = true; btn.style.background = '#1e40af';
   btn.style.opacity = '0.8'; btn.style.cursor = 'not-allowed';
