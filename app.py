@@ -66,7 +66,7 @@ HTML = """<!DOCTYPE html>
 <div class="max-w-screen-xl mx-auto px-4 py-3 space-y-3">
 
   <!-- Hidden file input (OUTSIDE any clickable container to avoid click-loop bugs) -->
-  <input type="file" id="file-input" accept=".xlsx,.xls"
+  <input type="file" id="file-input" accept=".xlsx,.xls,.csv"
          style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;">
 
   <!-- Drop zone: a <label> natively opens the file picker on click — no JS needed -->
@@ -74,8 +74,8 @@ HTML = """<!DOCTYPE html>
          style="display:block;background:#fff;border:2px dashed #cbd5e1;border-radius:16px;
                 padding:48px 24px;text-align:center;cursor:pointer;transition:all .2s;user-select:none;">
     <div style="font-size:40px;margin-bottom:10px;">&#128193;</div>
-    <p style="color:#6b7280;font-size:14px;margin:0;">Click to upload or drag &amp; drop your Fill Rate Excel file</p>
-    <p style="color:#9ca3af;font-size:12px;margin:6px 0 0 0;">.xlsx / .xls</p>
+    <p style="color:#6b7280;font-size:14px;margin:0;">Click to upload or drag &amp; drop your Fill Rate file</p>
+    <p style="color:#9ca3af;font-size:12px;margin:6px 0 0 0;">.xlsx / .xls / .csv</p>
   </label>
 
   <!-- File-ready bar — shown after a file is chosen -->
@@ -315,7 +315,7 @@ async function previewFile(file) {
   allRows = [];
   const mb = (file.size / 1024 / 1024).toFixed(1);
   document.getElementById('selected-file-name').textContent = file.name + '  (' + mb + ' MB)';
-  setMsg('⏳ Reading Excel… large files may take a minute, please wait');
+  setMsg('⏳ Reading file… large files may take a minute, please wait');
   dz.style.display = 'none';
   document.getElementById('file-ready-bar').style.display = 'block';
   // Disable Generate button while processing
@@ -325,12 +325,21 @@ async function previewFile(file) {
   const yieldUI = () => new Promise(r => setTimeout(r, 0));
 
   try {
-    const ab = await file.arrayBuffer();
-    await yieldUI();   // let the "Reading Excel…" message paint before the blocking parse
-    // dense mode + skipping formula/HTML/style parsing roughly halves both the time and
-    // the memory needed for large workbooks (10 MB+), which otherwise stall or OOM the tab
-    let wb = XLSX.read(ab, { type: 'array', dense: true, cellDates: true, dateNF: 'yyyy-mm-dd',
-                             cellFormula: false, cellHTML: false, cellStyles: false });
+    const isCsv = /\\.csv$/i.test(file.name);
+    let wb;
+    if (isCsv) {
+      // CSV: read as text so the delimiter/encoding sniffing works on the raw characters
+      const text = await file.text();
+      await yieldUI();   // let the "Reading file…" message paint before the blocking parse
+      wb = XLSX.read(text, { type: 'string', dense: true, cellDates: true, dateNF: 'yyyy-mm-dd' });
+    } else {
+      const ab = await file.arrayBuffer();
+      await yieldUI();   // let the "Reading file…" message paint before the blocking parse
+      // dense mode + skipping formula/HTML/style parsing roughly halves both the time and
+      // the memory needed for large workbooks (10 MB+), which otherwise stall or OOM the tab
+      wb = XLSX.read(ab, { type: 'array', dense: true, cellDates: true, dateNF: 'yyyy-mm-dd',
+                           cellFormula: false, cellHTML: false, cellStyles: false });
+    }
     let ws = wb.Sheets[wb.SheetNames[0]];
     const rawRows = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd', defval: '' });
     wb = null; ws = null;   // drop the parsed workbook before building allRows
@@ -1073,10 +1082,12 @@ def upload():
                 return jsonify({"error": f"Could not parse CSV data: {e}"}), 400
         elif "file" in request.files:
             file = request.files["file"]
+            is_csv = (file.filename or "").lower().endswith(".csv")
             try:
-                df = pd.read_excel(file)
+                df = pd.read_csv(file) if is_csv else pd.read_excel(file)
             except Exception as e:
-                return jsonify({"error": f"Could not read Excel file: {e}"}), 400
+                kind = "CSV" if is_csv else "Excel"
+                return jsonify({"error": f"Could not read {kind} file: {e}"}), 400
         else:
             return jsonify({"error": "No file provided"}), 400
 
