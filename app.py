@@ -327,6 +327,33 @@ async function extractRowsFromSheet(X, ws, cfg, onProgress) {
     if (isDense) { var row = ws[R]; return row ? row[C] : undefined; }
     return ws[X.utils.encode_cell({ r: R, c: C })];
   }
+  // Sales Order Date must always come out as YYYY-MM-DD. Reading it with the cell's own
+  // display format means a column formatted dd-mm-yyyy partway down yields "15-06-2026",
+  // which sorts before "2026-01-01" and gets silently dropped by the date filter (and
+  // breaks the month key). Formatting from the underlying value fixes that, and trimming
+  // any time component stops rows dated on the "Date To" day being excluded.
+  var DATE_COL = 'Sales Order Date';
+  var isoCache = {};   // a 200k-row file typically holds only a few hundred distinct dates
+  function isoDate(cell, text) {
+    if (cell && cell.t === 'd' && cell.v instanceof Date) {
+      var key = cell.v.getTime();
+      if (isoCache[key] !== undefined) return isoCache[key];
+      try {
+        var out = X.utils.format_cell({ t: 'd', v: cell.v, z: 'yyyy-mm-dd' });
+        isoCache[key] = out;
+        return out;
+      } catch (e) {}
+    }
+    var s = String(text == null ? '' : text).trim();
+    if (/^\\d{4}-\\d{2}-\\d{2}/.test(s)) return s.slice(0, 10);
+    var m = /^(\\d{1,2})[-\\/.](\\d{1,2})[-\\/.](\\d{4})$/.exec(s);
+    if (m) {
+      var a = +m[1], b = +m[2], day = a, mon = b;
+      if (a <= 12 && b > 12) { day = b; mon = a; }   // only reorder when it must be month-first
+      return m[3] + '-' + ('0' + mon).slice(-2) + '-' + ('0' + day).slice(-2);
+    }
+    return s;
+  }
   if (range.e.r <= range.s.r) return { empty: true };
 
   // Header row → column indices (case/space-insensitive, same precedence as before)
@@ -354,8 +381,10 @@ async function extractRowsFromSheet(X, ws, cfg, onProgress) {
     var r = {};
     for (var j = 0; j < KEEP.length; j++) {
       var canon = KEEP[j], Ci = hMap[canon];
-      r[canon] = Ci == null ? ''
-        : cellText(isDense ? (denseRow ? denseRow[Ci] : undefined) : cellAt(R, Ci));
+      if (Ci == null) { r[canon] = ''; continue; }
+      var cell = isDense ? (denseRow ? denseRow[Ci] : undefined) : cellAt(R, Ci);
+      var text = cellText(cell);
+      r[canon] = canon === DATE_COL ? isoDate(cell, text) : text;
     }
     // Numeric coerce
     for (var n = 0; n < NUM.length; n++) r[NUM[n]] = parseFloat(r[NUM[n]]) || 0;
