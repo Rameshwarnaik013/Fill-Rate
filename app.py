@@ -1,9 +1,13 @@
 from flask import Flask, request, jsonify, send_file, Response
 import pandas as pd
 import numpy as np
+import os
 from io import BytesIO
 
 app = Flask(__name__)
+
+# Short build id, shown in the header so it is obvious which deploy is live
+BUILD = (os.environ.get("VERCEL_GIT_COMMIT_SHA") or "local")[:7]
 
 INSTAMART_CUSTOMERS = {
     "PJTJ Technologies Private Limited",
@@ -60,6 +64,7 @@ HTML = """<!DOCTYPE html>
     <span class="text-2xl">&#128230;</span>
     <h1 class="text-xl font-semibold text-gray-800">Fill Rate Dashboard</h1>
     <span class="ml-auto text-xs text-gray-400" id="file-badge"></span>
+    <span class="text-[10px] text-gray-300 ml-2" title="deployed build">__BUILD__</span>
   </div>
 </header>
 
@@ -333,7 +338,9 @@ async function extractRowsFromSheet(X, ws, cfg, onProgress) {
   // breaks the month key). Formatting from the underlying value fixes that, and trimming
   // any time component stops rows dated on the "Date To" day being excluded.
   var DATE_COL = 'Sales Order Date';
-  var isoCache = {};   // a 200k-row file typically holds only a few hundred distinct dates
+  var isoCache = {}, textCache = {};   // a 200k-row file holds only a few hundred distinct dates
+  var MONTHS3 = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6,
+                  jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
   function isoDate(cell, text) {
     if (cell && cell.t === 'd' && cell.v instanceof Date) {
       var key = cell.v.getTime();
@@ -345,14 +352,40 @@ async function extractRowsFromSheet(X, ws, cfg, onProgress) {
       } catch (e) {}
     }
     var s = String(text == null ? '' : text).trim();
-    if (/^\\d{4}-\\d{2}-\\d{2}/.test(s)) return s.slice(0, 10);
-    var m = /^(\\d{1,2})[-\\/.](\\d{1,2})[-\\/.](\\d{4})$/.exec(s);
+    if (!s) return '';
+    if (textCache[s] !== undefined) return textCache[s];
+    textCache[s] = isoFromText(s);
+    return textCache[s];
+  }
+  function pad2(n) { return ('0' + n).slice(-2); }
+  function y4(y) { y = +y; return y < 100 ? (y < 50 ? 2000 + y : 1900 + y) : y; }
+  // Text dates arrive in whatever shape the ERP exported. Everything below normalises to
+  // YYYY-MM-DD; anything left unrecognised is counted and reported rather than silently
+  // breaking the date filter.
+  function isoFromText(s) {
+    var m;
+    if (/^\\d{4}-\\d{2}-\\d{2}/.test(s)) return s.slice(0, 10);          // already ISO (+ time)
+    m = /^(\\d{4})[-\\/.](\\d{1,2})[-\\/.](\\d{1,2})/.exec(s);            // yyyy/mm/dd
+    if (m) return m[1] + '-' + pad2(+m[2]) + '-' + pad2(+m[3]);
+    m = /^(\\d{1,2})[-\\/.](\\d{1,2})[-\\/.](\\d{2,4})/.exec(s);          // dd-mm-yyyy / dd-mm-yy
     if (m) {
       var a = +m[1], b = +m[2], day = a, mon = b;
       if (a <= 12 && b > 12) { day = b; mon = a; }   // only reorder when it must be month-first
-      return m[3] + '-' + ('0' + mon).slice(-2) + '-' + ('0' + day).slice(-2);
+      return y4(m[3]) + '-' + pad2(mon) + '-' + pad2(day);
     }
-    return s;
+    m = /^(\\d{1,2})[-\\/ ]([A-Za-z]{3,})[-\\/ ](\\d{2,4})/.exec(s);      // 15-Jun-2026
+    if (m && MONTHS3[m[2].slice(0, 3).toLowerCase()])
+      return y4(m[3]) + '-' + pad2(MONTHS3[m[2].slice(0, 3).toLowerCase()]) + '-' + pad2(+m[1]);
+    m = /^([A-Za-z]{3,})[-\\/ ](\\d{1,2}),?[-\\/ ](\\d{2,4})/.exec(s);    // Jun 15, 2026
+    if (m && MONTHS3[m[1].slice(0, 3).toLowerCase()])
+      return y4(m[3]) + '-' + pad2(MONTHS3[m[1].slice(0, 3).toLowerCase()]) + '-' + pad2(+m[2]);
+    if (/^\\d{5}(\\.\\d+)?$/.test(s)) {                                  // Excel serial as text
+      try {
+        var d = X.SSF.parse_date_code(parseFloat(s));
+        if (d && d.y) return d.y + '-' + pad2(d.m) + '-' + pad2(d.d);
+      } catch (e) {}
+    }
+    return s;   // unrecognised — left as-is and counted by the caller
   }
   if (range.e.r <= range.s.r) return { empty: true };
 
@@ -374,7 +407,7 @@ async function extractRowsFromSheet(X, ws, cfg, onProgress) {
 
   // Read only the needed columns straight off the worksheet — materialising every column
   // of every row first is what pushes a 230k-row file past the heap limit and truncates it.
-  var rows = [], skipped = 0;
+  var rows = [], skipped = 0, badDates = 0, badDateSample = null;
   var total = range.e.r - range.s.r, CHUNK = 5000;
   for (var R = range.s.r + 1; R <= range.e.r; R++) {
     var denseRow = isDense ? ws[R] : null;
@@ -384,10 +417,23 @@ async function extractRowsFromSheet(X, ws, cfg, onProgress) {
       if (Ci == null) { r[canon] = ''; continue; }
       var cell = isDense ? (denseRow ? denseRow[Ci] : undefined) : cellAt(R, Ci);
       var text = cellText(cell);
-      r[canon] = canon === DATE_COL ? isoDate(cell, text) : text;
+      if (canon === DATE_COL) {
+        var iso = isoDate(cell, text);
+        if (iso && !/^\\d{4}-\\d{2}-\\d{2}$/.test(iso)) {
+          badDates++;
+          if (badDateSample == null) badDateSample = iso;
+        }
+        r[canon] = iso;
+      } else {
+        r[canon] = text;
+      }
     }
     // Numeric coerce
-    for (var n = 0; n < NUM.length; n++) r[NUM[n]] = parseFloat(r[NUM[n]]) || 0;
+    // strip thousand separators so raw CSV text like "1,234.5" still coerces correctly
+    for (var n = 0; n < NUM.length; n++) {
+      var nv = r[NUM[n]];
+      r[NUM[n]] = parseFloat(typeof nv === 'string' ? nv.replace(/,/g, '') : nv) || 0;
+    }
     // Instamart override
     var cust = String(r['Customer'] || '').trim();
     if (INSTA.indexOf(cust) >= 0) r['Customer Group'] = 'Instamart';
@@ -400,7 +446,8 @@ async function extractRowsFromSheet(X, ws, cfg, onProgress) {
     var done = R - range.s.r;
     if (onProgress && total > CHUNK && done % CHUNK === 0) await onProgress(done, total);
   }
-  return { rows: rows, skipped: skipped, total: total, fileHeaders: fileHeaders };
+  return { rows: rows, skipped: skipped, total: total, fileHeaders: fileHeaders,
+           badDates: badDates, badDateSample: badDateSample };
 }
 
 // Worker source: same extractor, but the workbook is parsed off the main thread so the
@@ -411,7 +458,7 @@ const WORKER_SRC =
   "onmessage = async function (e) { try {" +
   "  var d = e.data;" +
   "  var wb = d.text != null" +
-  "    ? XLSX.read(d.text, { type:'string', dense:true, cellDates:true, dateNF:'yyyy-mm-dd' })" +
+  "    ? XLSX.read(d.text, { type:'string', dense:true, raw:true })" +
   "    : XLSX.read(d.buf, { type:'array', dense:true, cellDates:true, dateNF:'yyyy-mm-dd'," +
   "                         cellFormula:false, cellHTML:false, cellStyles:false });" +
   "  var ws = wb.Sheets[wb.SheetNames[0]];" +
@@ -485,10 +532,11 @@ async function previewFile(file) {
     if (!res) {
       let wb;
       if (isCsv) {
-        // CSV: read as text so the delimiter/encoding sniffing works on the raw characters
+        // CSV: read as raw text. SheetJS's own date sniffing reads "15-06-2026" as
+        // yy-mm-dd (2015-06-26), so values are kept verbatim and normalised by isoDate.
         const text = await file.text();
         await yieldUI();   // let the "Reading file…" message paint before the blocking parse
-        wb = XLSX.read(text, { type: 'string', dense: true, cellDates: true, dateNF: 'yyyy-mm-dd' });
+        wb = XLSX.read(text, { type: 'string', dense: true, raw: true });
       } else {
         const ab = await file.arrayBuffer();
         await yieldUI();   // let the "Reading file…" message paint before the blocking parse
@@ -518,8 +566,14 @@ async function previewFile(file) {
       ? ' (' + res.skipped.toLocaleString() + ' of ' + res.total.toLocaleString() +
         ' skipped — blank NEW MIS ITEM GROUP)'
       : '';
+    // An unreadable date silently breaks the date filter, so never let it pass unnoticed
+    const dateNote = res.badDates
+      ? '<br><span style="color:#b45309">⚠ ' + res.badDates.toLocaleString() +
+        ' row(s) have an unrecognised Sales Order Date (e.g. "' + esc(res.badDateSample) +
+        '") — these are excluded by the date filter.</span>'
+      : '';
     setMsg('✓ ' + allRows.length.toLocaleString() + ' rows ready' + skippedNote +
-           ' — click Generate Fill Rate');
+           ' — click Generate Fill Rate' + dateNote);
 
   } catch (e) {
     console.error('SheetJS error:', e);
@@ -1278,10 +1332,19 @@ function renderCharts(tab, rows) {
 </html>"""
 
 
+PAGE = HTML.replace("__BUILD__", BUILD)
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
-    return Response(HTML, mimetype="text/html")
+    # The whole app (markup + script) is this one document, so a cached copy means a new
+    # deploy never reaches the browser. Force a revalidation on every load.
+    resp = Response(PAGE, mimetype="text/html")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.route("/api/upload", methods=["POST"])
