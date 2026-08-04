@@ -188,6 +188,24 @@ HTML = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Month-on-month trend (shown only on the Item Close Remark / Parent wise tabs) -->
+    <div id="mom-panel" class="bg-white rounded-2xl shadow-sm overflow-hidden" style="display:none">
+      <div class="flex flex-wrap items-center gap-3 px-5 py-3 border-b border-gray-200">
+        <p class="text-xs font-bold text-slate-600 uppercase tracking-wide" id="mom-title"></p>
+        <div id="mom-filter-wrap" class="ml-auto items-center gap-2" style="display:none">
+          <label class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Close Remark</label>
+          <select id="mom-filter" onchange="renderMoMPanel(currentTab, filteredRows())"
+            class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full border-collapse" style="font-size:13px;font-weight:500;">
+          <thead id="mom-head"></thead>
+          <tbody id="mom-body"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Charts -->
     <div id="charts-card" class="bg-white rounded-2xl shadow-sm p-4 grid grid-cols-1 lg:grid-cols-2 gap-6">
       <div>
@@ -740,6 +758,7 @@ function applyFilters() {
   const rows = filteredRows();
   renderKPIs(rows);
   renderTable(currentTab, rows);
+  try { renderMoMPanel(currentTab, rows); } catch(e) { console.error('MoM render error:', e); }
   try { renderCharts(currentTab, rows); } catch(e) { console.error('Chart render error:', e); }
 }
 
@@ -778,6 +797,7 @@ function switchTab(tab, btn) {
   renderTable(tab, rows);   // restores/replaces thead, so set col-label after
   const colLabel = document.getElementById('col-label');
   if (colLabel && TABS[tab]) colLabel.textContent = TABS[tab].label;
+  renderMoMPanel(tab, rows);
   renderCharts(tab, rows);
 }
 
@@ -1014,6 +1034,78 @@ function renderPivotTable(tab, rows) {
         ? `<td class="px-2 py-1 text-gray-900 font-semibold">${esc(v)}</td>`
         : `<td class="px-2 py-1 text-right text-gray-900 ${boldLastCol && j === r.length - 1 ? 'font-extrabold' : 'font-semibold'}">${v === '' ? '' : fmtD(v)}</td>`
       ).join('')}</tr>`).join('');
+}
+
+// ── Month-on-month trend panels (additive; sits under the existing pivot table) ──
+const MOM_TABS = {
+  'closed-remark': { row: 'Item Close Remark', label: 'Closed Remarks',
+                     title: 'Item Close Remark — Month on Month (Closed Kgs)' },
+  'closed-parent': { row: 'Parent Item', label: 'Parent Name', filterBy: 'Item Close Remark',
+                     title: 'Parent wise — Month on Month (Closed Kgs)' },
+};
+
+function renderMoMPanel(tab, rows) {
+  const panel = document.getElementById('mom-panel');
+  const cfg = MOM_TABS[tab];
+  if (!cfg) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  document.getElementById('mom-title').textContent = cfg.title;
+
+  const keyOf = (r, col) => String(r[col] || '').trim() || '(Blank)';
+  const closed = rows.filter(r => (r['Closed Kgs'] || 0) > 0);
+
+  // Optional filter (Parent wise → narrow to one close remark), selection preserved
+  const wrap = document.getElementById('mom-filter-wrap');
+  const sel  = document.getElementById('mom-filter');
+  let picked = '';
+  if (cfg.filterBy) {
+    wrap.style.display = 'flex';
+    const opts = [...new Set(closed.map(r => keyOf(r, cfg.filterBy)))].sort();
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">All</option>' +
+                    opts.map(o => `<option>${esc(o)}</option>`).join('');
+    if (opts.indexOf(prev) >= 0) sel.value = prev;
+    picked = sel.value;
+  } else {
+    wrap.style.display = 'none';
+    sel.innerHTML = '';
+  }
+
+  const src = picked ? closed.filter(r => keyOf(r, cfg.filterBy) === picked) : closed;
+
+  // rows × months matrix of Closed Kgs
+  const g = {}, monthTotals = {};
+  let grand = 0;
+  src.forEach(r => {
+    const d  = String(r['Sales Order Date'] || '').trim();
+    const mk = d.length >= 7 ? d.slice(0, 7) : '';
+    if (!mk) return;
+    const key = keyOf(r, cfg.row), v = r['Closed Kgs'] || 0;
+    if (!g[key]) g[key] = { total: 0, cells: {} };
+    g[key].cells[mk] = (g[key].cells[mk] || 0) + v;
+    g[key].total += v;
+    monthTotals[mk] = (monthTotals[mk] || 0) + v;
+    grand += v;
+  });
+  const months = Object.keys(monthTotals).sort();
+  const list   = Object.entries(g).sort((a, b) => b[1].total - a[1].total);
+  const rnd    = v => Math.round(v * 1000) / 1000;
+
+  document.getElementById('mom-head').innerHTML =
+    `<tr class="bg-slate-100 border-b-2 border-slate-300">
+      ${thP(esc(cfg.label), 'left')}${months.map(m => thP(prettyMonth(m), 'right')).join('')}
+      ${thP('Grand Total', 'right')}</tr>`;
+
+  let html = list.map(([label, v]) => `<tr class="border-t border-gray-200">
+      <td class="px-2 py-1 text-gray-900 font-semibold">${esc(label)}</td>
+      ${months.map(m => `<td class="px-2 py-1 text-right text-gray-900 font-semibold">${
+        v.cells[m] ? fmtD(rnd(v.cells[m])) : ''}</td>`).join('')}
+      <td class="px-2 py-1 text-right text-gray-900 font-extrabold">${fmtD(rnd(v.total))}</td></tr>`).join('');
+  html += `<tr class="grand-total border-t border-gray-200">
+      <td class="px-2 py-1">Grand Total</td>
+      ${months.map(m => `<td class="px-2 py-1 text-right">${fmtD(rnd(monthTotals[m]))}</td>`).join('')}
+      <td class="px-2 py-1 text-right">${fmtD(rnd(grand))}</td></tr>`;
+  document.getElementById('mom-body').innerHTML = html;
 }
 
 // ── Table rendering ───────────────────────────────────────────────────────────
