@@ -133,6 +133,11 @@ HTML = """<!DOCTYPE html>
         <select id="f-cg" onchange="applyFilters()"
           class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[160px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
       </div>
+      <div>
+        <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Customer</label>
+        <select id="f-customer" onchange="applyFilters()"
+          class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[180px] max-w-[260px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
+      </div>
       <button onclick="resetFilters()"
         class="ml-auto px-4 py-1.5 text-sm rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors">
         &#x21BA; Reset
@@ -717,6 +722,7 @@ function initFilters() {
   const uniq = col => [...new Set(allRows.map(r => r[col]).filter(Boolean))].sort();
   populateSel('f-origin', uniq('Origin'));
   populateSel('f-cg', uniq('Customer Group'));
+  populateSel('f-customer', uniq('Customer'));
   const dates = allRows.map(r => r['Sales Order Date']).filter(Boolean).sort();
   if (dates.length) {
     document.getElementById('f-date-from').value = dates[0];
@@ -732,6 +738,7 @@ function populateSel(id, opts) {
 function resetFilters() {
   document.getElementById('f-origin').value = '';
   document.getElementById('f-cg').value = '';
+  document.getElementById('f-customer').value = '';
   const dates = allRows.map(r => r['Sales Order Date']).filter(Boolean).sort();
   if (dates.length) {
     document.getElementById('f-date-from').value = dates[0];
@@ -743,11 +750,13 @@ function resetFilters() {
 function filteredRows() {
   const origin = document.getElementById('f-origin').value;
   const cg     = document.getElementById('f-cg').value;
+  const cust   = document.getElementById('f-customer').value;
   const dFrom  = document.getElementById('f-date-from').value;
   const dTo    = document.getElementById('f-date-to').value;
   return allRows.filter(r => {
     if (origin && r['Origin'] !== origin) return false;
     if (cg && r['Customer Group'] !== cg) return false;
+    if (cust && r['Customer'] !== cust) return false;
     if (dFrom && r['Sales Order Date'] && r['Sales Order Date'] < dFrom) return false;
     if (dTo   && r['Sales Order Date'] && r['Sales Order Date'] > dTo)   return false;
     return true;
