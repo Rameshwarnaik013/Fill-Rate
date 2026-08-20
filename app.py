@@ -171,6 +171,23 @@ HTML = """<!DOCTYPE html>
                 onclick="switchTab('customer-group-excl',this)">&#128101; Customer Group (excluded)</button>
         <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
                 onclick="switchTab('month',this)">&#128200; Month on Month</button>
+        <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
+                onclick="switchTab('fillrate-mom',this)">&#128203; Fill Rate Month on Month</button>
+      </div>
+
+      <!-- Fill Rate Month on Month: its own Origin / Closed Remark filters -->
+      <div id="frmom-filters" class="items-center gap-5 px-5 py-3 border-b border-gray-200 bg-slate-50"
+           style="display:none">
+        <div class="flex items-center gap-2">
+          <label class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Origin</label>
+          <select id="frmom-origin" onchange="renderTable('fillrate-mom', filteredRows())"
+            class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[140px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Closed Remark</label>
+          <select id="frmom-remark" onchange="renderTable('fillrate-mom', filteredRows())"
+            class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
+        </div>
       </div>
 
       <!-- Table -->
@@ -1045,6 +1062,81 @@ function renderPivotTable(tab, rows) {
       ).join('')}</tr>`).join('');
 }
 
+// ── Fill Rate Month on Month tab (additive) ───────────────────────────────────
+function monthMMMYY(ym) {
+  const m = /^(\\d{4})-(\\d{2})$/.exec(ym);
+  return m ? MONTH_NAMES[+m[2] - 1] + '-' + m[1].slice(2) : ym;
+}
+
+function renderFillRateMoM(rows) {
+  const thead = document.getElementById('table-head');
+  if (DEFAULT_THEAD === null) DEFAULT_THEAD = thead.innerHTML;
+
+  // Tab-local filters, built from the globally filtered rows; selection preserved
+  const oSel = document.getElementById('frmom-origin');
+  const rSel = document.getElementById('frmom-remark');
+  const fillSel = (sel, vals) => {
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">All</option>' +
+                    vals.map(v => `<option>${esc(v)}</option>`).join('');
+    if (vals.indexOf(prev) >= 0) sel.value = prev;
+  };
+  const uniqOf = col => [...new Set(rows.map(r => String(r[col] || '').trim()).filter(Boolean))].sort();
+  fillSel(oSel, uniqOf('Origin'));
+  fillSel(rSel, uniqOf('Item Close Remark'));
+  const fOrigin = oSel.value, fRemark = rSel.value;
+
+  const src = rows.filter(r => {
+    if (fOrigin && String(r['Origin'] || '').trim() !== fOrigin) return false;
+    if (fRemark && String(r['Item Close Remark'] || '').trim() !== fRemark) return false;
+    return true;
+  });
+
+  // Item Group × month → summed Stock / Delivered (fill rate is computed on the sums)
+  const g = {}, monthTot = {}, tot = { s: 0, d: 0 };
+  src.forEach(r => {
+    const key = String(r['NEW MIS ITEM GROUP'] || '').trim();
+    if (!key) return;
+    const dt = String(r['Sales Order Date'] || '').trim();
+    const mk = dt.length >= 7 ? dt.slice(0, 7) : '';
+    if (!mk) return;
+    const s = r['Stock Qty in KGS'] || 0, d = r['Delivered Qty (Kgs)'] || 0;
+    if (!g[key]) g[key] = { s: 0, d: 0, cells: {} };
+    if (!g[key].cells[mk]) g[key].cells[mk] = { s: 0, d: 0 };
+    g[key].cells[mk].s += s; g[key].cells[mk].d += d;
+    g[key].s += s; g[key].d += d;
+    if (!monthTot[mk]) monthTot[mk] = { s: 0, d: 0 };
+    monthTot[mk].s += s; monthTot[mk].d += d;
+    tot.s += s; tot.d += d;
+  });
+  const months = Object.keys(monthTot).sort();
+  const list   = Object.entries(g).sort((a, b) => b[1].s - a[1].s);
+
+  thead.innerHTML = `<tr class="bg-slate-100 border-b-2 border-slate-300">
+    ${thP('Item Group', 'left')}${months.map(m => thP(monthMMMYY(m), 'center')).join('')}
+    ${thP('Grand Total', 'center')}</tr>`;
+
+  const cell = v => {
+    if (!v || !v.s) return '<td class="px-2 py-1"></td>';
+    const f = v.d / v.s;
+    return `<td class="px-2 py-1 text-center" style="background:${fillClrAbs(f)}">
+      <div class="font-extrabold" style="color:#1a1a1a">${pct(f)}</div>
+      <div class="text-[10px]" style="color:#374151">${fmtN(v.d)} / ${fmtN(v.s)}</div></td>`;
+  };
+  const totCell = v => `<td class="px-2 py-1 text-center">
+      <div class="font-extrabold">${v.s ? pct(v.d / v.s) : '-'}</div>
+      <div class="text-[10px] font-semibold">${fmtN(v.d)} / ${fmtN(v.s)}</div></td>`;
+
+  let html = list.map(([label, v]) => `<tr class="border-t border-gray-200">
+      <td class="px-2 py-1 text-gray-900 font-semibold">${esc(label)}</td>
+      ${months.map(m => cell(v.cells[m])).join('')}
+      ${cell({ s: v.s, d: v.d })}</tr>`).join('');
+  html += `<tr class="grand-total border-t border-gray-200">
+      <td class="px-2 py-1">Grand Total</td>
+      ${months.map(m => totCell(monthTot[m])).join('')}${totCell(tot)}</tr>`;
+  document.getElementById('table-body').innerHTML = html;
+}
+
 // ── Month-on-month trend panels (additive; sits under the existing pivot table) ──
 const MOM_TABS = {
   'closed-remark': { row: 'Item Close Remark', label: 'Closed Remarks',
@@ -1119,6 +1211,9 @@ function renderMoMPanel(tab, rows) {
 
 // ── Table rendering ───────────────────────────────────────────────────────────
 function renderTable(tab, rows) {
+  const frf = document.getElementById('frmom-filters');
+  if (frf) frf.style.display = tab === 'fillrate-mom' ? 'flex' : 'none';
+  if (tab === 'fillrate-mom') { renderFillRateMoM(rows); return; }
   if (PIVOT_TABS[tab]) { renderPivotTable(tab, rows); return; }
   // Standard tab: restore the original 8-column header if a pivot replaced it
   if (DEFAULT_THEAD !== null) {
@@ -1368,7 +1463,7 @@ function renderMonthCharts(rows) {
 function renderCharts(tab, rows) {
   // Pivot tabs have no fill-rate series — hide the charts card entirely
   const chartsCard = document.getElementById('charts-card');
-  if (PIVOT_TABS[tab]) { chartsCard.style.display = 'none'; return; }
+  if (PIVOT_TABS[tab] || tab === 'fillrate-mom') { chartsCard.style.display = 'none'; return; }
   chartsCard.style.display = '';
   if (tab === 'month') { renderMonthCharts(rows); return; }
   if (tab === 'customer-group-excl') rows = exclusionRows(rows);
