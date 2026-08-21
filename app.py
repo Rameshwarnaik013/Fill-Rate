@@ -139,6 +139,11 @@ HTML = """<!DOCTYPE html>
           class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[180px] max-w-[260px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
       </div>
       <div>
+        <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1">New Mis Item Group</label>
+        <select id="f-mis-group" onchange="applyFilters()"
+          class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[170px] max-w-[240px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
+      </div>
+      <div>
         <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Parent Item</label>
         <select id="f-parent" onchange="applyFilters()"
           class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[180px] max-w-[260px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
@@ -764,6 +769,7 @@ function initFilters() {
   populateSel('f-origin', uniq('Origin'));
   populateSel('f-cg', uniq('Customer Group'));
   populateSel('f-customer', uniq('Customer'));
+  populateSel('f-mis-group', uniq('NEW MIS ITEM GROUP'));
   populateSel('f-parent', uniq('Parent Item'));
   // Item Name is a type-to-search box: the datalist supplies the suggestions
   const itemNames = uniq('Item Name');
@@ -786,6 +792,7 @@ function resetFilters() {
   document.getElementById('f-origin').value = '';
   document.getElementById('f-cg').value = '';
   document.getElementById('f-customer').value = '';
+  document.getElementById('f-mis-group').value = '';
   document.getElementById('f-parent').value = '';
   document.getElementById('f-item-name').value = '';
   const dates = allRows.map(r => r['Sales Order Date']).filter(Boolean).sort();
@@ -800,6 +807,7 @@ function filteredRows() {
   const origin = document.getElementById('f-origin').value;
   const cg     = document.getElementById('f-cg').value;
   const cust   = document.getElementById('f-customer').value;
+  const misGrp = document.getElementById('f-mis-group').value;
   const parent = document.getElementById('f-parent').value;
   const dFrom  = document.getElementById('f-date-from').value;
   const dTo    = document.getElementById('f-date-to').value;
@@ -811,6 +819,7 @@ function filteredRows() {
     if (origin && r['Origin'] !== origin) return false;
     if (cg && r['Customer Group'] !== cg) return false;
     if (cust && r['Customer'] !== cust) return false;
+    if (misGrp && r['NEW MIS ITEM GROUP'] !== misGrp) return false;
     if (parent && r['Parent Item'] !== parent) return false;
     if (iName) {
       const v = String(r['Item Name'] || '');
@@ -1211,7 +1220,7 @@ function renderFillRateMoM(rows) {
   const list   = Object.entries(g).sort((a, b) => b[1].s - a[1].s);
 
   thead.innerHTML = `<tr class="bg-slate-100 border-b-2 border-slate-300">
-    ${thP('Item Group', 'left')}${months.map(m => thP(monthMMMYY(m), 'center')).join('')}
+    ${thP('NEW MIS ITEM GROUP', 'left')}${months.map(m => thP(monthMMMYY(m), 'center')).join('')}
     ${thP('Grand Total', 'center')}</tr>`;
 
   const cell = v => {
