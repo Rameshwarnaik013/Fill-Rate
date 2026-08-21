@@ -185,8 +185,12 @@ HTML = """<!DOCTYPE html>
         </div>
         <div class="flex items-center gap-2">
           <label class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Closed Remark</label>
-          <select id="frmom-remark" onchange="renderTable('fillrate-mom', filteredRows())"
-            class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[150px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
+          <button type="button" id="frmom-remark-btn" onclick="frmomToggleMenu(event)"
+            class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[150px] text-left bg-white
+                   hover:border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-400">All &#9662;</button>
+          <div id="frmom-remark-menu"
+               style="display:none;position:fixed;z-index:50;min-width:210px;max-height:280px;overflow-y:auto"
+               class="bg-white border border-gray-200 rounded-lg shadow-lg p-2"></div>
         </div>
       </div>
 
@@ -1068,13 +1072,68 @@ function monthMMMYY(ym) {
   return m ? MONTH_NAMES[+m[2] - 1] + '-' + m[1].slice(2) : ym;
 }
 
+// Closed Remark filter on this tab accepts several values at once; an empty set = All
+let frmomRemarks = new Set();
+
+function frmomSyncRemarkMenu(opts) {
+  const menu = document.getElementById('frmom-remark-menu');
+  const btn  = document.getElementById('frmom-remark-btn');
+  [...frmomRemarks].forEach(v => { if (opts.indexOf(v) < 0) frmomRemarks.delete(v); });
+  const sig = opts.join('||');
+  if (menu.dataset.sig !== sig) {          // rebuild only when the option list changes,
+    menu.dataset.sig = sig;                // so an open menu keeps its state while ticking
+    menu.innerHTML =
+      `<div class="flex gap-3 px-1 pb-2 mb-1 border-b border-gray-200">
+         <button type="button" class="text-[11px] text-blue-600 hover:underline"
+                 onclick="frmomSelectAllRemarks(true)">Select all</button>
+         <button type="button" class="text-[11px] text-blue-600 hover:underline"
+                 onclick="frmomSelectAllRemarks(false)">Clear</button>
+       </div>` +
+      opts.map(o => `<label class="flex items-center gap-2 px-1 py-1 text-sm cursor-pointer hover:bg-blue-50 rounded">
+        <input type="checkbox" value="${esc(o)}" onchange="frmomToggleRemark(this)">
+        <span>${esc(o)}</span></label>`).join('');
+  }
+  menu.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = frmomRemarks.has(cb.value); });
+  const n = frmomRemarks.size;
+  btn.innerHTML = esc(n === 0 ? 'All' : n === 1 ? [...frmomRemarks][0] : n + ' selected') + ' &#9662;';
+}
+
+function frmomToggleRemark(cb) {
+  if (cb.checked) frmomRemarks.add(cb.value); else frmomRemarks.delete(cb.value);
+  renderTable('fillrate-mom', filteredRows());
+}
+
+function frmomSelectAllRemarks(all) {
+  const menu = document.getElementById('frmom-remark-menu');
+  frmomRemarks = new Set();
+  if (all) menu.querySelectorAll('input[type=checkbox]').forEach(cb => frmomRemarks.add(cb.value));
+  renderTable('fillrate-mom', filteredRows());
+}
+
+function frmomToggleMenu(e) {
+  e.stopPropagation();
+  const menu = document.getElementById('frmom-remark-menu');
+  if (menu.style.display === 'block') { menu.style.display = 'none'; return; }
+  // fixed positioning keeps the menu clear of the card's overflow clipping
+  const r = document.getElementById('frmom-remark-btn').getBoundingClientRect();
+  menu.style.left = r.left + 'px';
+  menu.style.top  = (r.bottom + 4) + 'px';
+  menu.style.display = 'block';
+}
+
+document.addEventListener('click', e => {
+  const menu = document.getElementById('frmom-remark-menu');
+  if (!menu || menu.style.display !== 'block') return;
+  if (e.target.closest('#frmom-remark-menu') || e.target.closest('#frmom-remark-btn')) return;
+  menu.style.display = 'none';
+});
+
 function renderFillRateMoM(rows) {
   const thead = document.getElementById('table-head');
   if (DEFAULT_THEAD === null) DEFAULT_THEAD = thead.innerHTML;
 
   // Tab-local filters, built from the globally filtered rows; selection preserved
   const oSel = document.getElementById('frmom-origin');
-  const rSel = document.getElementById('frmom-remark');
   const fillSel = (sel, vals) => {
     const prev = sel.value;
     sel.innerHTML = '<option value="">All</option>' +
@@ -1083,12 +1142,13 @@ function renderFillRateMoM(rows) {
   };
   const uniqOf = col => [...new Set(rows.map(r => String(r[col] || '').trim()).filter(Boolean))].sort();
   fillSel(oSel, uniqOf('Origin'));
-  fillSel(rSel, uniqOf('Item Close Remark'));
-  const fOrigin = oSel.value, fRemark = rSel.value;
+  frmomSyncRemarkMenu(uniqOf('Item Close Remark'));
+  const fOrigin = oSel.value;
 
   const src = rows.filter(r => {
     if (fOrigin && String(r['Origin'] || '').trim() !== fOrigin) return false;
-    if (fRemark && String(r['Item Close Remark'] || '').trim() !== fRemark) return false;
+    if (frmomRemarks.size &&
+        !frmomRemarks.has(String(r['Item Close Remark'] || '').trim())) return false;
     return true;
   });
 
