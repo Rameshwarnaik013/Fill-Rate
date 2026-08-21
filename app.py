@@ -138,6 +138,18 @@ HTML = """<!DOCTYPE html>
         <select id="f-customer" onchange="applyFilters()"
           class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[180px] max-w-[260px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
       </div>
+      <div>
+        <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Parent Item</label>
+        <select id="f-parent" onchange="applyFilters()"
+          class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[180px] max-w-[260px] focus:outline-none focus:ring-2 focus:ring-blue-400"></select>
+      </div>
+      <div>
+        <label class="block text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-1">Item Name</label>
+        <input id="f-item-name" list="item-name-list" type="search" placeholder="Type to search…"
+          oninput="debouncedApplyFilters()" autocomplete="off"
+          class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm min-w-[200px] max-w-[280px] focus:outline-none focus:ring-2 focus:ring-blue-400">
+        <datalist id="item-name-list"></datalist>
+      </div>
       <button onclick="resetFilters()"
         class="ml-auto px-4 py-1.5 text-sm rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors">
         &#x21BA; Reset
@@ -326,7 +338,7 @@ const CUSTOMER_RENAMES_JS = {
 };
 const REQUIRED_COLS = ["Stock Qty in KGS","Delivered Qty (Kgs)","Closed Kgs",
                        "Pending Dispatch Kgs","NEW MIS ITEM GROUP"];
-const KEEP_COLS = ["NEW MIS ITEM GROUP","Parent Item","Sales Order Date",
+const KEEP_COLS = ["NEW MIS ITEM GROUP","Parent Item","Item Name","Sales Order Date",
                    "Customer Group","Customer","Client Type","Origin","Item Close Remark",
                    "Stock Qty in KGS","Delivered Qty (Kgs)","Closed Kgs","Pending Dispatch Kgs"];
 
@@ -739,11 +751,25 @@ async function uploadFile(file) {
 }
 
 // ── Filters ───────────────────────────────────────────────────────────────────
+let itemNameSet = new Set();          // known Item Names, for exact-vs-contains matching
+let _fltTimer = null;
+// the Item Name box filters as you type, so coalesce keystrokes on large files
+function debouncedApplyFilters() {
+  clearTimeout(_fltTimer);
+  _fltTimer = setTimeout(applyFilters, 250);
+}
+
 function initFilters() {
   const uniq = col => [...new Set(allRows.map(r => r[col]).filter(Boolean))].sort();
   populateSel('f-origin', uniq('Origin'));
   populateSel('f-cg', uniq('Customer Group'));
   populateSel('f-customer', uniq('Customer'));
+  populateSel('f-parent', uniq('Parent Item'));
+  // Item Name is a type-to-search box: the datalist supplies the suggestions
+  const itemNames = uniq('Item Name');
+  itemNameSet = new Set(itemNames);
+  document.getElementById('item-name-list').innerHTML =
+    itemNames.map(n => `<option value="${esc(n)}"></option>`).join('');
   const dates = allRows.map(r => r['Sales Order Date']).filter(Boolean).sort();
   if (dates.length) {
     document.getElementById('f-date-from').value = dates[0];
@@ -760,6 +786,8 @@ function resetFilters() {
   document.getElementById('f-origin').value = '';
   document.getElementById('f-cg').value = '';
   document.getElementById('f-customer').value = '';
+  document.getElementById('f-parent').value = '';
+  document.getElementById('f-item-name').value = '';
   const dates = allRows.map(r => r['Sales Order Date']).filter(Boolean).sort();
   if (dates.length) {
     document.getElementById('f-date-from').value = dates[0];
@@ -772,12 +800,22 @@ function filteredRows() {
   const origin = document.getElementById('f-origin').value;
   const cg     = document.getElementById('f-cg').value;
   const cust   = document.getElementById('f-customer').value;
+  const parent = document.getElementById('f-parent').value;
   const dFrom  = document.getElementById('f-date-from').value;
   const dTo    = document.getElementById('f-date-to').value;
+  // Item Name: exact when picked from the suggestions, otherwise a contains-search
+  const iName  = document.getElementById('f-item-name').value.trim();
+  const iExact = iName !== '' && itemNameSet.has(iName);
+  const iLower = iName.toLowerCase();
   return allRows.filter(r => {
     if (origin && r['Origin'] !== origin) return false;
     if (cg && r['Customer Group'] !== cg) return false;
     if (cust && r['Customer'] !== cust) return false;
+    if (parent && r['Parent Item'] !== parent) return false;
+    if (iName) {
+      const v = String(r['Item Name'] || '');
+      if (iExact ? v !== iName : v.toLowerCase().indexOf(iLower) < 0) return false;
+    }
     if (dFrom && r['Sales Order Date'] && r['Sales Order Date'] < dFrom) return false;
     if (dTo   && r['Sales Order Date'] && r['Sales Order Date'] > dTo)   return false;
     return true;
@@ -1693,7 +1731,7 @@ def upload():
                 lambda v: CUSTOMER_RENAMES.get(str(v).strip(), v) if pd.notna(v) else v
             )
 
-        keep = ["NEW MIS ITEM GROUP", "Parent Item", "Sales Order Date",
+        keep = ["NEW MIS ITEM GROUP", "Parent Item", "Item Name", "Sales Order Date",
                 "Customer Group", "Customer", "Client Type", "Origin",
                 "Item Close Remark"] + num_cols
         keep = [c for c in keep if c in df.columns]
