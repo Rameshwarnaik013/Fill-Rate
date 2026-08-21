@@ -190,6 +190,8 @@ HTML = """<!DOCTYPE html>
                 onclick="switchTab('month',this)">&#128200; Month on Month</button>
         <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
                 onclick="switchTab('fillrate-mom',this)">&#128203; Fill Rate Month on Month</button>
+        <button class="tab-btn px-5 py-3 text-sm font-medium text-gray-500 whitespace-nowrap"
+                onclick="switchTab('conditions',this)">&#8505; Applied Conditions</button>
       </div>
 
       <!-- Fill Rate Month on Month: its own Origin / Closed Remark filters -->
@@ -767,15 +769,9 @@ function debouncedApplyFilters() {
 function initFilters() {
   const uniq = col => [...new Set(allRows.map(r => r[col]).filter(Boolean))].sort();
   populateSel('f-origin', uniq('Origin'));
-  populateSel('f-cg', uniq('Customer Group'));
-  populateSel('f-customer', uniq('Customer'));
-  populateSel('f-mis-group', uniq('NEW MIS ITEM GROUP'));
-  populateSel('f-parent', uniq('Parent Item'));
-  // Item Name is a type-to-search box: the datalist supplies the suggestions
-  const itemNames = uniq('Item Name');
-  itemNameSet = new Set(itemNames);
-  document.getElementById('item-name-list').innerHTML =
-    itemNames.map(n => `<option value="${esc(n)}"></option>`).join('');
+  itemNameSet = new Set(uniq('Item Name'));
+  // the five conditional lists (incl. the Item Name suggestions) are built from the data
+  refreshConditionalFilters();
   const dates = allRows.map(r => r['Sales Order Date']).filter(Boolean).sort();
   if (dates.length) {
     document.getElementById('f-date-from').value = dates[0];
@@ -803,35 +799,88 @@ function resetFilters() {
   applyFilters();
 }
 
-function filteredRows() {
-  const origin = document.getElementById('f-origin').value;
-  const cg     = document.getElementById('f-cg').value;
-  const cust   = document.getElementById('f-customer').value;
-  const misGrp = document.getElementById('f-mis-group').value;
-  const parent = document.getElementById('f-parent').value;
-  const dFrom  = document.getElementById('f-date-from').value;
-  const dTo    = document.getElementById('f-date-to').value;
+function currentFilters() {
   // Item Name: exact when picked from the suggestions, otherwise a contains-search
-  const iName  = document.getElementById('f-item-name').value.trim();
-  const iExact = iName !== '' && itemNameSet.has(iName);
-  const iLower = iName.toLowerCase();
-  return allRows.filter(r => {
-    if (origin && r['Origin'] !== origin) return false;
-    if (cg && r['Customer Group'] !== cg) return false;
-    if (cust && r['Customer'] !== cust) return false;
-    if (misGrp && r['NEW MIS ITEM GROUP'] !== misGrp) return false;
-    if (parent && r['Parent Item'] !== parent) return false;
-    if (iName) {
-      const v = String(r['Item Name'] || '');
-      if (iExact ? v !== iName : v.toLowerCase().indexOf(iLower) < 0) return false;
-    }
-    if (dFrom && r['Sales Order Date'] && r['Sales Order Date'] < dFrom) return false;
-    if (dTo   && r['Sales Order Date'] && r['Sales Order Date'] > dTo)   return false;
-    return true;
-  });
+  const iName = document.getElementById('f-item-name').value.trim();
+  return {
+    origin: document.getElementById('f-origin').value,
+    cg:     document.getElementById('f-cg').value,
+    cust:   document.getElementById('f-customer').value,
+    misGrp: document.getElementById('f-mis-group').value,
+    parent: document.getElementById('f-parent').value,
+    dFrom:  document.getElementById('f-date-from').value,
+    dTo:    document.getElementById('f-date-to').value,
+    iName:  iName,
+    iExact: iName !== '' && itemNameSet.has(iName),
+    iLower: iName.toLowerCase(),
+  };
+}
+
+// `skip` lets one filter be left out, which is how each conditional dropdown works out
+// the values still reachable given every *other* selection. skip = null → normal filtering.
+function rowPasses(r, f, skip) {
+  if (f.origin && skip !== 'origin' && r['Origin'] !== f.origin) return false;
+  if (f.cg     && skip !== 'cg'     && r['Customer Group'] !== f.cg) return false;
+  if (f.cust   && skip !== 'cust'   && r['Customer'] !== f.cust) return false;
+  if (f.misGrp && skip !== 'misGrp' && r['NEW MIS ITEM GROUP'] !== f.misGrp) return false;
+  if (f.parent && skip !== 'parent' && r['Parent Item'] !== f.parent) return false;
+  if (f.iName  && skip !== 'iName') {
+    const v = String(r['Item Name'] || '');
+    if (f.iExact ? v !== f.iName : v.toLowerCase().indexOf(f.iLower) < 0) return false;
+  }
+  if (f.dFrom && r['Sales Order Date'] && r['Sales Order Date'] < f.dFrom) return false;
+  if (f.dTo   && r['Sales Order Date'] && r['Sales Order Date'] > f.dTo)   return false;
+  return true;
+}
+
+function filteredRows() {
+  const f = currentFilters();
+  return allRows.filter(r => rowPasses(r, f, null));
+}
+
+// ── Conditional (cascading) filters ───────────────────────────────────────────
+// Customer Group, Customer, New Mis Item Group, Parent Item and Item Name each offer
+// only the values that still exist once the other filters are applied.
+const COND_FILTERS = [
+  { id: 'f-cg',        col: 'Customer Group',     skip: 'cg' },
+  { id: 'f-customer',  col: 'Customer',           skip: 'cust' },
+  { id: 'f-mis-group', col: 'NEW MIS ITEM GROUP', skip: 'misGrp' },
+  { id: 'f-parent',    col: 'Parent Item',        skip: 'parent' },
+];
+
+function setCondOptions(id, opts) {
+  const el = document.getElementById(id);
+  const cur = el.value;
+  if (cur && opts.indexOf(cur) < 0) opts = [cur].concat(opts);   // never drop an active choice
+  const sig = opts.join('||');
+  if (el.dataset.sig !== sig) {          // only touch the DOM when the list really changed
+    el.dataset.sig = sig;
+    el.innerHTML = '<option value="">All</option>' +
+                   opts.map(o => `<option>${esc(o)}</option>`).join('');
+  }
+  el.value = cur;
+}
+
+function refreshConditionalFilters() {
+  if (!allRows.length) return;
+  const f = currentFilters();
+  const optsFor = (skip, col) => {
+    const s = new Set();
+    for (const r of allRows) if (rowPasses(r, f, skip)) { const v = r[col]; if (v) s.add(v); }
+    return [...s].sort();
+  };
+  COND_FILTERS.forEach(c => setCondOptions(c.id, optsFor(c.skip, c.col)));
+  const names = optsFor('iName', 'Item Name');
+  const dl = document.getElementById('item-name-list');
+  const sig = names.join('||');
+  if (dl.dataset.sig !== sig) {
+    dl.dataset.sig = sig;
+    dl.innerHTML = names.map(n => `<option value="${esc(n)}"></option>`).join('');
+  }
 }
 
 function applyFilters() {
+  refreshConditionalFilters();   // keep the dependent dropdowns in step with the selection
   const rows = filteredRows();
   renderKPIs(rows);
   renderTable(currentTab, rows);
@@ -1113,6 +1162,88 @@ function renderPivotTable(tab, rows) {
       ).join('')}</tr>`).join('');
 }
 
+// ── Applied Conditions tab ────────────────────────────────────────────────────
+// Live record of what is currently filtering the dashboard plus the fixed rules the
+// data goes through, so any number on screen can be traced back to a condition.
+function renderConditionsTab(rows) {
+  const thead = document.getElementById('table-head');
+  if (DEFAULT_THEAD === null) DEFAULT_THEAD = thead.innerHTML;
+  thead.innerHTML = `<tr class="bg-slate-100 border-b-2 border-slate-300">
+    ${thP('Condition', 'left')}${thP('Applied value / rule', 'left')}</tr>`;
+
+  const f = currentFilters();
+  const none = '<span style="color:#94a3b8">All (no filter)</span>';
+  const val  = v => v ? '<b>' + esc(v) + '</b>' : none;
+  const section = t => `<tr class="grand-total border-t border-gray-200"><td class="px-2 py-1" colspan="2">${t}</td></tr>`;
+  const row = (k, v) => `<tr class="border-t border-gray-200">
+      <td class="px-2 py-1 text-gray-900 font-semibold align-top" style="width:34%">${k}</td>
+      <td class="px-2 py-1 text-gray-700">${v}</td></tr>`;
+
+  const kept = allRows.length, shown = rows.length;
+  const pctShown = kept ? Math.round(shown / kept * 1000) / 10 : 0;
+  const dateNote = f.dFrom || f.dTo
+    ? '<b>' + esc(f.dFrom || '…') + '</b> to <b>' + esc(f.dTo || '…') + '</b>' : none;
+  const itemNote = f.iName
+    ? '<b>' + esc(f.iName) + '</b> <span style="color:#64748b">(' +
+      (f.iExact ? 'exact match' : 'contains search') + ')</span>' : none;
+
+  let h = '';
+  h += section('Filters currently applied');
+  h += row('Origin', val(f.origin));
+  h += row('Sales Order Date range', dateNote);
+  h += row('Customer Group', val(f.cg));
+  h += row('Customer', val(f.cust));
+  h += row('New Mis Item Group', val(f.misGrp));
+  h += row('Parent Item', val(f.parent));
+  h += row('Item Name', itemNote);
+  h += row('Rows in view', '<b>' + fmtN(shown) + '</b> of ' + fmtN(kept) +
+           ' loaded (' + pctShown + '%)');
+
+  h += section('Which rows are loaded');
+  h += row('Excluded at load', 'Rows with a blank <b>NEW MIS ITEM GROUP</b> are dropped. ' +
+           'The count is reported in the upload message.');
+  h += row('Sheet used', 'The first sheet of the workbook; .xlsx, .xls and .csv are accepted.');
+  h += row('Sales Order Date', 'Normalised to <b>YYYY-MM-DD</b> from the underlying cell value, so a ' +
+           'column with mixed display formats (dd-mm-yyyy, dd-mmm-yyyy, serials) stays comparable. ' +
+           'Unreadable dates are counted in the upload message and fall outside any date range.');
+
+  h += section('Values rewritten on load');
+  h += row('Origin', 'Taken <b>as-is</b> from the file\\'s Origin column — no derivation from Branch or Item Group.');
+  h += row('Customer Group &rarr; Instamart',
+           [...INSTAMART_CUSTOMERS_JS].map(esc).join('<br>') +
+           '<br><span style="color:#64748b">these customers are forced to Customer Group = Instamart</span>');
+  h += row('Customer renamed', Object.entries(CUSTOMER_RENAMES_JS)
+           .map(([a, b]) => esc(a) + ' &rarr; <b>' + esc(b) + '</b>').join('<br>'));
+
+  h += section('How the metrics are calculated');
+  h += row('Fill Rate %', 'Delivered Qty (Kgs) &divide; Stock Qty in KGS, on <b>summed</b> KGS — never an average of percentages');
+  h += row('Closed %', 'Closed Kgs &divide; Stock Qty in KGS');
+  h += row('Pen Dis %', 'Pending Dispatch Kgs &divide; Stock Qty in KGS');
+  h += row('Colour bands',
+      '<span style="background:#70AD47;padding:1px 6px;border-radius:3px">Fill Rate &ge; 90%</span> ' +
+      '<span style="background:#FFD966;padding:1px 6px;border-radius:3px">70–89%</span> ' +
+      '<span style="background:#FF6B6B;padding:1px 6px;border-radius:3px">&lt; 70%</span>' +
+      '<br><span style="color:#64748b">Closed % / Pen Dis % are inverted (lower is better). ' +
+      'The Fill Rate column on the standard tabs shades relative to the rows in view; ' +
+      'the KPI card and the Fill Rate Month on Month tab use the fixed bands above.</span>');
+
+  h += section('Tab-specific conditions');
+  h += row('Customer tab', 'Amazon Retail India and Flipkart India Private Limited sub-channels are rolled up under their parent (click to expand).');
+  h += row('Customer Group (excluded)', 'Same as Customer Group, minus <b>' +
+           [...EXCLUDED_CGS].map(esc).join('</b>, <b>') + '</b>, and minus ' +
+           '<b>Flipkart India Private Limited</b> within <b>E-Commerce</b> only.');
+  h += row('Closed Kgs / Item Close Remark / Parent wise',
+           'Only rows with <b>Closed Kgs &gt; 0</b> are counted; values shown to 3 decimals.');
+  h += row('Month on Month / Fill Rate Month on Month',
+           'Months come from Sales Order Date; rows with no usable date are excluded. ' +
+           'Fill Rate Month on Month is grouped by <b>NEW MIS ITEM GROUP</b> and has its own ' +
+           'Origin and Closed Remark filters that narrow <i>after</i> the filters above.');
+  h += row('Excel download', 'Exports the current filtered view — 10 sheets ' +
+           '(the two trend panels and this tab are not included).');
+
+  document.getElementById('table-body').innerHTML = h;
+}
+
 // ── Fill Rate Month on Month tab (additive) ───────────────────────────────────
 function monthMMMYY(ym) {
   const m = /^(\\d{4})-(\\d{2})$/.exec(ym);
@@ -1320,6 +1451,7 @@ function renderMoMPanel(tab, rows) {
 function renderTable(tab, rows) {
   const frf = document.getElementById('frmom-filters');
   if (frf) frf.style.display = tab === 'fillrate-mom' ? 'flex' : 'none';
+  if (tab === 'conditions') { renderConditionsTab(rows); return; }
   if (tab === 'fillrate-mom') { renderFillRateMoM(rows); return; }
   if (PIVOT_TABS[tab]) { renderPivotTable(tab, rows); return; }
   // Standard tab: restore the original 8-column header if a pivot replaced it
@@ -1570,7 +1702,9 @@ function renderMonthCharts(rows) {
 function renderCharts(tab, rows) {
   // Pivot tabs have no fill-rate series — hide the charts card entirely
   const chartsCard = document.getElementById('charts-card');
-  if (PIVOT_TABS[tab] || tab === 'fillrate-mom') { chartsCard.style.display = 'none'; return; }
+  if (PIVOT_TABS[tab] || tab === 'fillrate-mom' || tab === 'conditions') {
+    chartsCard.style.display = 'none'; return;
+  }
   chartsCard.style.display = '';
   if (tab === 'month') { renderMonthCharts(rows); return; }
   if (tab === 'customer-group-excl') rows = exclusionRows(rows);
